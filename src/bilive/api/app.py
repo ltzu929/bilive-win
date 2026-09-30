@@ -22,6 +22,7 @@ from bilive.domain.models import (
 )
 from bilive.domain.states import manual_retry_allowed
 from bilive.jobs.action_jobs import ActionConflict, ActionJobStore
+from bilive.media.subtitle_store import SubtitleStore
 
 app = FastAPI(title="Bilive Workbench API", version="2.0.0")
 app.add_middleware(
@@ -33,6 +34,7 @@ app.add_middleware(
 
 settings = load_settings()
 jobs = ActionJobStore(Path(".bilive-jobs"))
+subtitles = SubtitleStore(Path("artifacts/subtitles"))
 
 
 class ApiError(BaseModel):
@@ -58,6 +60,7 @@ class SubtitleDraft(BaseModel):
     segment_id: str
     duration: float = Field(gt=0)
     revision: int = 1
+    expected_revision: int | None = None
     lines: list[dict[str, Any]]
 
 
@@ -143,14 +146,20 @@ def save_subtitles(draft: SubtitleDraft) -> dict[str, Any]:
         for i, item in enumerate(draft.lines)
     ]
     try:
-        clamp_subtitle_times(lines, draft.duration)
+        saved = subtitles.save(
+            draft.segment_id,
+            draft.duration,
+            lines,
+            draft.revision,
+            expected_revision=draft.expected_revision,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     # 保存字幕 ≠ 更新成片；调用方必须再提交 reburn/finalize
     return {
         "segment_id": draft.segment_id,
-        "revision": draft.revision + 1,
-        "lines": len(lines),
+        "revision": saved["revision"],
+        "lines": len(saved["lines"]),
         "requires_reburn": True,
     }
 

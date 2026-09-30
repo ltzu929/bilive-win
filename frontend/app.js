@@ -505,9 +505,76 @@ function renderLibrary() {
       setTimeout(() => n.remove(), 220);
     }, 2200);
   };
-  $main.querySelector("#btn-save-subs")?.addEventListener("click", () => toast("字幕已保存草稿（需重新生成成片）"));
-  $main.querySelector("#btn-reburn")?.addEventListener("click", () => toast("已提交 reburn 任务 job_••"));
-  $main.querySelector("#btn-publish")?.addEventListener("click", () => toast("已提交 approve_publish 任务 job_••"));
+
+  const api = async (path, body) => {
+    const res = await fetch(path, {
+      method: body ? "POST" : "GET",
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : res.statusText);
+    return data;
+  };
+
+  const collectLines = () =>
+    [...$main.querySelectorAll(".subtitle-table tbody tr")].map((tr, i) => {
+      const inputs = tr.querySelectorAll("input");
+      return {
+        start: parseFloat(inputs[0].value.replace(":", "")) || 0,
+        end: parseFloat(inputs[1].value.replace(":", "")) || 0,
+        text: inputs[2].value,
+      };
+    });
+
+  const SEGMENT_ID = "demo-seg-第一次上台";
+  const SOURCE_REL = "demo/session.mp4";
+
+  $main.querySelector("#btn-save-subs")?.addEventListener("click", async () => {
+    try {
+      const out = await api("/api/subtitles/save", {
+        segment_id: SEGMENT_ID,
+        duration: 24.5,
+        revision: 1,
+        lines: collectLines(),
+      });
+      toast(`字幕已保存 revision=${out.revision}，需重新生成成片`);
+    } catch (e) {
+      toast("保存失败：" + e.message);
+    }
+  });
+
+  $main.querySelector("#btn-reburn")?.addEventListener("click", async () => {
+    try {
+      const out = await api("/api/actions", {
+        action: "reburn",
+        target: SEGMENT_ID,
+        revision: 1,
+        payload: {
+          source_relpath: SOURCE_REL,
+          source_start: 2530,
+          source_end: 2605,
+        },
+      });
+      toast(`已提交 reburn 任务 ${out.job_id}`);
+    } catch (e) {
+      toast("提交失败：" + e.message);
+    }
+  });
+
+  $main.querySelector("#btn-publish")?.addEventListener("click", async () => {
+    try {
+      const out = await api("/api/actions", {
+        action: "approve_publish",
+        target: SEGMENT_ID,
+        revision: 1,
+        payload: {},
+      });
+      toast(`已提交 approve_publish 任务 ${out.job_id}`);
+    } catch (e) {
+      toast("提交失败：" + e.message);
+    }
+  });
 
   $main.querySelectorAll("#src-tabs .tab, #right-tabs .tab").forEach((tab) => {
     tab.addEventListener("click", () => {

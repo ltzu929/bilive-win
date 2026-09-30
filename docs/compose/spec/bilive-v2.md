@@ -1,9 +1,9 @@
 ---
 feature: bilive-v2
-status: designed
+status: in-progress
 updated: 2026-09-30
 branch: develop
-commits:
+commits: fdddeb3
 ---
 
 # Bilive 新版（Windows 单机工作台）
