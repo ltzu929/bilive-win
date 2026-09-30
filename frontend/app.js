@@ -60,6 +60,16 @@ const DEMO = {
   ],
 };
 
+async function fetchJSON(path) {
+  try {
+    const res = await fetch(path);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 function el(html) {
   const t = document.createElement("template");
   t.innerHTML = html.trim();
@@ -90,13 +100,35 @@ function liveThumb(hasLive) {
 }
 
 /* ---------- 发布队列 ---------- */
-function renderPublish() {
-  const selected = DEMO.recordings.find((r) => r.selected) || DEMO.recordings[0];
+async function renderPublish() {
+  const live = await fetchJSON("/api/health");
+  const uploads = await fetchJSON("/api/uploads?limit=50");
+  const recordings = await fetchJSON("/api/recordings?limit=20");
+  const rows = (uploads && uploads.items && uploads.items.length)
+    ? uploads.items.map((u) => ({
+        id: u.video_path,
+        title: u.title || u.video_path.split(/[\\/]/).pop(),
+        time: u.updated_at || "",
+        crumb: "本机 › 上传队列",
+        dur: "-",
+        status: u.stage === "published" ? "已发布" : u.stage === "failed" ? "失败" : u.stage,
+        tone: u.stage === "published" ? "green" : u.stage === "failed" ? "red" : u.bvid ? "orange" : "blue",
+        progress: u.bvid ? 0.9 : 0.4,
+        stage: u.remote_filename ? "媒体已上传" : u.stage,
+        action: u.stage === "published" ? "查看结果" : "查看详情",
+      }))
+    : DEMO.recordings;
+  const selected = rows.find((r) => r.selected) || rows[0];
+  const sourceTag = (uploads && uploads.items && uploads.items.length)
+    ? "数据来源：真实上传队列"
+    : "数据来源：演示数据（队列为空）";
+  const recCount = recordings ? recordings.total : 0;
   $main.innerHTML = `
     <div class="page-head">
       <div class="page-title">
         <h1>发布队列</h1>
         <div class="sub">成片生成与允许发布是两个步骤</div>
+        <div class="sub-2">${sourceTag} · 本机录播 ${recCount} 场 · API ${live ? live.status : "offline"}</div>
       </div>
     </div>
     <div class="tabs" id="pub-tabs">
@@ -114,7 +146,7 @@ function renderPublish() {
               <tr><th style="width:38%">视频信息</th><th>状态</th><th style="width:22%">最新进度</th><th>操作</th></tr>
             </thead>
             <tbody>
-              ${DEMO.recordings.map((r) => `
+              ${rows.map((r) => `
                 <tr class="row-hover ${r.selected ? "selected" : ""}" data-id="${r.id}">
                   <td>
                     <div class="media-cell">
@@ -150,11 +182,11 @@ function renderPublish() {
             <svg viewBox="0 0 320 180" width="100%" height="100%"><rect width="320" height="180" fill="#c9d3e4"/><circle cx="160" cy="70" r="36" fill="#a8b8d2"/><rect x="60" y="100" width="200" height="50" rx="12" fill="#b7c4da"/></svg>
             <span class="dur">02:05:12</span>
           </div>
-          <div class="detail-title mt-12">直播里的小插曲</div>
-          <div class="detail-sub">09月30日 14:08</div>
+          <div class="detail-title mt-12">${selected ? selected.title : "直播里的小插曲"}</div>
+          <div class="detail-sub">${selected ? selected.time : "09月30日 14:08"}</div>
           <div class="tag-row">
-            <span class="pill pill-gray">阿橙</span>
-            <span class="pill pill-gray">聊天直播</span>
+            <span class="pill pill-gray">${selected && selected.crumb ? selected.crumb.split(" › ")[0] : "阿橙"}</span>
+            <span class="pill pill-gray">${selected && selected.crumb ? selected.crumb.split(" › ")[1] : "聊天直播"}</span>
           </div>
         </div>
         <div class="detail-section">
@@ -671,10 +703,16 @@ function renderStreamer() {
 }
 
 /* ---------- 设置 ---------- */
-function renderSettings() {
+async function renderSettings() {
+  const live = await fetchJSON("/api/health");
+  const svc = await fetchJSON("/api/services");
+  const jobsHealth = live ? "ok" : "offline";
   $main.innerHTML = `
     <div class="page-head">
-      <div class="page-title"><h1>设置与服务状态</h1></div>
+      <div class="page-title">
+        <h1>设置与服务状态</h1>
+        <div class="sub-2">API ${jobsHealth}${svc ? " · 服务探测来自 /api/services" : ""}</div>
+      </div>
     </div>
     <div class="tabs" id="set-tabs">
       <button class="tab active">服务状态</button>
