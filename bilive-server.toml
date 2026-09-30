@@ -1,0 +1,67 @@
+# Bilive 服务配置（可入库默认值）
+# 机器绝对路径与秘密不得写入本文件。优先级：环境变量 > 配置文件 > 默认值。
+
+[worker]
+idle_timeout = 900
+idle_check_interval = 30
+
+[video]
+min_source_size_mb = 100
+
+[slice.burst]
+ratio = 3.0
+window = 10
+context = 120
+merge_gap = 5
+top_n = 3
+lag = 0
+
+[slice.mimo]
+model = "mimo-v2.5"
+fps = 1
+media_resolution = "default"
+timeout = 180
+max_base64_bytes = 48000000
+request_concurrency = 3
+encode_concurrency = 1
+
+[slice.quality]
+quality = 0.80
+completeness = 0.80
+confidence = 0.80
+
+[slice.analysis]
+pre_judge_asr = true
+asr_prompt_max_chars = 4000
+
+[slice.multi_modal]
+# 多模态判断入口开关，保持与旧基线一致
+enabled = true
+
+[slice.subtitle]
+asr_model = "large-v3"
+asr_device = "cuda"
+asr_compute_type = "float16"
+asr_batch = 8
+asr_cpu_threads = 8
+asr_vad = true
+padding = 6.0
+snap_tolerance = 3.0
+light_correct = true
+
+[slice.edit]
+font_family = "Noto Sans SC"
+font_size = 20
+margin_v = 60
+
+[upload]
+auto_start = true
+poll_interval = 10
+max_attempts = 3
+retry_base = 30
+auth_retry = 120
+delete_after_success = true
+
+[dashboard]
+# 仅作展示摘要；热改需另有实现，不在此处承诺
+allowed_hosts = []
