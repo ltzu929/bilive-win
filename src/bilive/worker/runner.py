@@ -10,6 +10,7 @@ from pathlib import Path
 from bilive.domain.models import ActionJob
 from bilive.jobs.action_jobs import ActionJobStore
 from bilive.media.finalize import Finalizer, PipelineError
+from bilive.upload.queue import UploadQueue
 from bilive.worker.locks import LockUnavailable, ProcessLock
 
 
@@ -20,11 +21,13 @@ class Worker:
         finalizer: Finalizer,
         lock_path: Path,
         worker_id: str = "worker-1",
+        upload_queue: UploadQueue | None = None,
     ) -> None:
         self.jobs = jobs
         self.finalizer = finalizer
         self.lock_path = lock_path
         self.worker_id = worker_id
+        self.upload_queue = upload_queue
         self._last_activity = time.time()
 
     def touch(self) -> None:
@@ -76,12 +79,19 @@ class Worker:
                 saved = json.loads(meta.read_text(encoding="utf-8"))
                 if saved.get("revision") != revision:
                     raise PipelineError("approve_publish rejected: stale revision")
-            # 激活 staged 行的真正入队由上传侧写 SQLite；此处返回激活意图
+            activated: dict | None = None
+            if self.upload_queue is not None:
+                try:
+                    self.upload_queue.stage(str(final))
+                    activated = self.upload_queue.activate(str(final))
+                except ValueError as exc:
+                    raise PipelineError(str(exc)) from exc
             return {
                 "ok": True,
                 "activate_upload": True,
                 "video_path": str(final),
                 "has_remote_filename": False,
+                "upload_stage": (activated or {}).get("stage"),
             }
 
         if action == "retry_upload":

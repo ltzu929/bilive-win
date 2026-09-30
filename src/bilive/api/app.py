@@ -23,6 +23,7 @@ from bilive.domain.models import (
 from bilive.domain.states import manual_retry_allowed
 from bilive.jobs.action_jobs import ActionConflict, ActionJobStore
 from bilive.media.subtitle_store import SubtitleStore
+from bilive.upload.queue import UploadQueue
 
 app = FastAPI(title="Bilive Workbench API", version="2.0.0")
 app.add_middleware(
@@ -35,6 +36,7 @@ app.add_middleware(
 settings = load_settings()
 jobs = ActionJobStore(Path(".bilive-jobs"))
 subtitles = SubtitleStore(Path("artifacts/subtitles"))
+upload_queue = UploadQueue(settings.paths.db_path or Path("src/db/data.db"))
 
 
 class ApiError(BaseModel):
@@ -237,6 +239,47 @@ def retry_upload(req: UploadRetryRequest) -> dict[str, Any]:
         )
     job = jobs.submit("retry_upload", req.video_path, {"stage": req.stage})
     return {"job_id": job.job_id, "status": job.status.value}
+
+
+class StageUploadRequest(BaseModel):
+    video_path: str
+    title: str = ""
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class ActivateRequest(BaseModel):
+    video_path: str
+
+
+class WithdrawRequest(BaseModel):
+    video_path: str
+
+
+@app.post("/api/uploads/stage")
+def stage_upload(req: StageUploadRequest) -> dict[str, Any]:
+    try:
+        return upload_queue.stage(req.video_path, req.title, req.description, req.tags)
+    except DatabaseUnavailable as exc:
+        raise HTTPException(status_code=503, detail={"code": "unavailable", "detail": str(exc)}) from exc
+
+
+@app.post("/api/uploads/activate")
+def activate_upload(req: ActivateRequest) -> dict[str, Any]:
+    try:
+        return upload_queue.activate(req.video_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except DatabaseUnavailable as exc:
+        raise HTTPException(status_code=503, detail={"code": "unavailable", "detail": str(exc)}) from exc
+
+
+@app.post("/api/uploads/withdraw")
+def withdraw_upload(req: WithdrawRequest) -> dict[str, Any]:
+    try:
+        return upload_queue.withdraw(req.video_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/services")
