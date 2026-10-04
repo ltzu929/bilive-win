@@ -1,0 +1,2 @@
+# FPS fixture is verified against the upstream distribution's byte hash.
+tests/fixtures/blrec_fix_upstream.py.txt -text

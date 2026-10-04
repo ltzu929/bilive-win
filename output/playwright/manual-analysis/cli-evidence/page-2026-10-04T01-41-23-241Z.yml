@@ -1,0 +1,109 @@
+- generic [ref=f1e2]:
+  - complementary [ref=f1e3]:
+    - generic [ref=f1e4]:
+      - generic [ref=f1e5]: Bilive
+      - button "收起侧边栏" [expanded] [ref=f1e6] [cursor=pointer]
+    - navigation "工作台导航" [ref=f1e8]:
+      - link "录播库" [ref=f1e9] [cursor=pointer]:
+        - /url: "#/library"
+      - link "直播间" [ref=f1e13] [cursor=pointer]:
+        - /url: "#/live"
+      - link "发布队列" [ref=f1e17] [cursor=pointer]:
+        - /url: "#/publish"
+      - link "主播档案" [ref=f1e21] [cursor=pointer]:
+        - /url: "#/streamer"
+      - link "录播回收" [ref=f1e25] [cursor=pointer]:
+        - /url: "#/recycle"
+    - generic [ref=f1e29]:
+      - link "设置" [ref=f1e30] [cursor=pointer]:
+        - /url: "#/settings"
+      - status [ref=f1e34]: 本机服务正常
+  - main [ref=f1e36]:
+    - generic [ref=f1e281]:
+      - generic [ref=f1e282]:
+        - generic [ref=f1e283]:
+          - link "录播库" [ref=f1e284] [cursor=pointer]:
+            - /url: "#/library"
+          - generic [ref=f1e285]: /
+          - button "验收主播" [ref=f1e286] [cursor=pointer]
+        - heading "2026-10-03 · 14:22:59" [level=1] [ref=f1e287]
+        - paragraph [ref=f1e288]:
+          - generic [ref=f1e289]: 房间 24393
+          - generic [ref=f1e290]: 时长 00:00:05
+          - generic [ref=f1e291]: 1.03 MiB
+          - generic [ref=f1e292]: 1 个片段
+          - generic [ref=f1e293]: 未完成复核
+        - group [ref=f1e294]:
+          - generic "源文件信息" [ref=f1e295] [cursor=pointer]
+      - generic [ref=f1e296]:
+        - button "切换场次 / 管理" [ref=f1e297] [cursor=pointer]
+        - link "主播档案" [ref=f1e298] [cursor=pointer]:
+          - /url: "#/streamer?room=24393"
+        - button "AI 分析本场录播" [ref=f1e299] [cursor=pointer]
+        - button "整场复核" [ref=f1e300] [cursor=pointer]
+        - button "刷新场次" [ref=f1e301] [cursor=pointer]
+    - generic [ref=f1e303]:
+      - generic [ref=f1e304]:
+        - generic [ref=f1e305]:
+          - tablist [ref=f1e306]:
+            - tab "源录播" [selected] [ref=f1e307] [cursor=pointer]
+            - tab "当前成片" [ref=f1e308] [cursor=pointer]
+          - button "大画面" [ref=f1e309] [cursor=pointer]
+        - generic [ref=f1e310]:
+          - tabpanel "源录播" [ref=f1e311]
+          - generic [ref=f1e313]:
+            - generic [ref=f1e314]: 暂无连续密度数据
+            - button "查看候选统计" [ref=f1e315] [cursor=pointer]
+            - generic [ref=f1e316]:
+              - generic [ref=f1e317]: 00:00:00
+              - generic [ref=f1e318]: 所选源区间
+              - generic [ref=f1e319]: 00:00:04
+          - generic [ref=f1e320]:
+            - generic [ref=f1e321]:
+              - text: 源入点
+              - textbox "源入点" [ref=f1e322]: 00:00:00
+            - button "当前位置设为入点" [ref=f1e323] [cursor=pointer]
+            - generic [ref=f1e325]:
+              - text: 源出点
+              - textbox "源出点" [ref=f1e326]: 00:00:04
+            - button "当前位置设为出点" [ref=f1e327] [cursor=pointer]
+            - button "补选片段" [ref=f1e329] [cursor=pointer]
+      - generic [ref=f1e331]:
+        - tablist [ref=f1e332]:
+          - tab "内容 / 投稿资料" [ref=f1e333] [cursor=pointer]
+          - tab "字幕" [selected] [ref=f1e334] [cursor=pointer]
+        - generic [ref=f1e335]:
+          - generic [ref=f1e336]:
+            - heading "验收标题 字幕待补充 / 确认" [level=2] [ref=f1e337]:
+              - text: 验收标题
+              - generic [ref=f1e338]: 字幕待补充 / 确认
+            - generic [ref=f1e339]: 时间相对片段起点
+          - tabpanel "字幕" [ref=f1e341]:
+            - generic [ref=f1e342]:
+              - strong [ref=f1e343]: 当前片段还没有字幕
+              - paragraph [ref=f1e344]: 点击“本地模型识别字幕”自动转写当前片段，也可试听后手工添加。核对并保存字幕后才能生成成片。
+            - generic [ref=f1e345]:
+              - button "本地模型识别字幕" [disabled] [ref=f1e346]
+              - button "添加字幕行" [disabled] [ref=f1e347]
+              - button "保存字幕" [disabled] [ref=f1e349]
+            - paragraph [ref=f1e350]: 识别当前已保存的片段范围 · 结果填入草稿，核对后保存
+            - paragraph [ref=f1e351]: 点击行号定位字幕 · 时间从片段起点 00:00 计时
+            - paragraph [ref=f1e352]: 保存字幕会使旧成片失效，需要重新生成
+          - status [ref=f1e354]: 已废弃当前片段，源录播保留。
+    - generic [ref=f1e355]:
+      - heading "片段候选 （共 1 个）" [level=3] [ref=f1e356]
+      - generic [ref=f1e357]:
+        - button "向前滚动候选" [ref=f1e358] [cursor=pointer]
+        - button "1. 验收标题 00:00:00 – 00:00:04 已废弃" [pressed] [ref=f1e361] [cursor=pointer]:
+          - strong [ref=f1e362]: 1. 验收标题
+          - generic [ref=f1e363]: 00:00:00 – 00:00:04
+          - generic [ref=f1e364]: 已废弃
+        - button "向后滚动候选" [ref=f1e365] [cursor=pointer]
+      - generic [ref=f1e367]:
+        - paragraph [ref=f1e368]: 可在内容页查看 AI 判断与质量
+        - generic [ref=f1e370]:
+          - status [ref=f1e371]: 已废弃：人工判断无需切片
+          - button "废弃当前片段" [disabled] [ref=f1e372]
+          - button "生成成片" [disabled] [ref=f1e373]
+          - button "允许发布" [disabled] [ref=f1e374]
+      - status

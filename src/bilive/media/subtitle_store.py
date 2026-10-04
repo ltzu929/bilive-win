@@ -55,11 +55,14 @@ class SubtitleStore:
             return {"segment_id": segment_id, "revision": 0, "lines": [], "duration": 0.0}
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def write_ass(self, segment_id: str, out_path: Path) -> Path:
+    def write_ass(self, segment_id: str, out_path: Path, appearance: dict | None = None) -> Path:
         data = self.load(segment_id)
         if not data["lines"]:
             raise ValueError("no saved subtitles to write")
-        style = "Style: Default,Noto Sans SC,20,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,60,1"
+        from bilive.vendor.subtitle_style import SubtitleStyle, validate_style
+        validate_style(appearance or {})
+        a = SubtitleStyle.from_mapping(appearance)
+        style = f"Style: Default,{a.font_name},{a.font_size},{a.primary_colour or '&H00FFFFFF'},&H000000FF,{a.outline_colour or '&H00000000'},&H64000000,0,0,0,0,100,100,0,0,1,{a.outline if a.outline is not None else 1},0,{a.alignment or 2},10,10,{a.margin_v},1"
         lines = [
             "[Script Info]",
             "ScriptType: v4.00+",

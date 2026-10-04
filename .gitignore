@@ -3,6 +3,7 @@ Videos/
 logs/
 artifacts/
 .runtime/
+.bilive-jobs/
 *.db
 *.db-journal
 *.pt

@@ -1,0 +1,121 @@
+- generic [ref=f1e2]:
+  - complementary [ref=f1e3]:
+    - generic [ref=f1e4]:
+      - generic [ref=f1e5]: Bilive
+      - button "收起侧边栏" [expanded] [ref=f1e6] [cursor=pointer]
+    - navigation "工作台导航" [ref=f1e8]:
+      - link "录播库" [ref=f1e9] [cursor=pointer]:
+        - /url: "#/library"
+      - link "直播间" [ref=f1e13] [cursor=pointer]:
+        - /url: "#/live"
+      - link "发布队列" [ref=f1e17] [cursor=pointer]:
+        - /url: "#/publish"
+      - link "主播档案" [ref=f1e21] [cursor=pointer]:
+        - /url: "#/streamer"
+      - link "录播回收" [ref=f1e25] [cursor=pointer]:
+        - /url: "#/recycle"
+    - generic [ref=f1e29]:
+      - link "设置" [ref=f1e30] [cursor=pointer]:
+        - /url: "#/settings"
+      - status [ref=f1e34]: 本机服务正常
+  - main [ref=f1e36]:
+    - generic [ref=f1e44]:
+      - heading "设置与服务状态" [level=1] [ref=f1e46]
+      - button "刷新" [ref=f1e48] [cursor=pointer]
+    - tablist [ref=f1e50]:
+      - tab "服务状态" [ref=f1e51] [cursor=pointer]
+      - tab "处理参数" [selected] [ref=f1e52] [cursor=pointer]
+      - tab "路径与账号" [ref=f1e53] [cursor=pointer]
+      - tab "字幕默认样式" [ref=f1e54] [cursor=pointer]
+    - generic [ref=f1e55]:
+      - generic [ref=f1e56]:
+        - heading "录播切片方式" [level=2] [ref=f1e57]
+        - generic [ref=f1e58]:
+          - generic [ref=f1e59]:
+            - checkbox "录制结束后自动 AI 切片" [ref=f1e60]
+            - text: 录制结束后自动 AI 切片
+          - paragraph [ref=f1e61]: 默认关闭。开发期间由你在录播库选择场次，再点击“AI 分析本场录播”。
+          - paragraph [ref=f1e62]: 开启并保存后，新完成的录播会自动将候选视频发送给 AI 分析并生成待审核片段。发布仍需人工确认。
+          - generic [ref=f1e63]:
+            - button "保存切片设置" [ref=f1e64] [cursor=pointer]
+            - status [ref=f1e65]: 已保存：自动切片已关闭，请手动选择录播分析。
+          - paragraph [ref=f1e66]: 关闭会取消尚未开始的自动分析；已经开始的分析完成当前任务。保存立即生效，已有录播不会补发。
+      - generic [ref=f1e67]:
+        - generic [ref=f1e68]:
+          - heading "当前处理配置（只读摘要）" [level=2] [ref=f1e69]
+          - button "查看处理参数" [ref=f1e70] [cursor=pointer]
+        - generic [ref=f1e72]:
+          - term [ref=f1e73]: 自动 AI 切片
+          - definition [ref=f1e74]: 已开启
+          - term [ref=f1e75]: AI 判断
+          - definition [ref=f1e76]: MiMo（mimo-v2.5）
+          - term [ref=f1e77]: 语音转写
+          - definition [ref=f1e78]: faster-whisper（large-v3）
+          - term [ref=f1e79]: 质量门
+          - definition [ref=f1e80]: 质量 0.8 · 完整度 0.8 · 置信度 0.8
+          - term [ref=f1e81]: 请求并发 · 编码并发
+          - definition [ref=f1e82]: 3 · 1
+      - generic [ref=f1e83]:
+        - generic [ref=f1e84]:
+          - heading "MiMo 判断只读" [level=2] [ref=f1e85]
+          - generic [ref=f1e86]:
+            - term [ref=f1e87]: 服务地址
+            - definition [ref=f1e88]: https://api.xiaomimimo.com/v1
+            - term [ref=f1e89]: 模型
+            - definition [ref=f1e90]: mimo-v2.5
+            - term [ref=f1e91]: 视频采样帧率
+            - definition [ref=f1e92]: "1"
+            - term [ref=f1e93]: media_resolution
+            - definition [ref=f1e94]: default
+            - term [ref=f1e95]: 请求超时（秒）
+            - definition [ref=f1e96]: "180"
+            - term [ref=f1e97]: max_base64_bytes
+            - definition [ref=f1e98]: "48000000"
+            - term [ref=f1e99]: 请求并发
+            - definition [ref=f1e100]: "3"
+            - term [ref=f1e101]: 编码并发
+            - definition [ref=f1e102]: "1"
+        - generic [ref=f1e103]:
+          - heading "质量门只读" [level=2] [ref=f1e104]
+          - generic [ref=f1e105]:
+            - term [ref=f1e106]: 质量
+            - definition [ref=f1e107]: "0.8"
+            - term [ref=f1e108]: 完整度
+            - definition [ref=f1e109]: "0.8"
+            - term [ref=f1e110]: 置信度
+            - definition [ref=f1e111]: "0.8"
+        - generic [ref=f1e112]:
+          - heading "候选召回只读" [level=2] [ref=f1e113]
+          - generic [ref=f1e114]:
+            - term [ref=f1e115]: 突增倍数
+            - definition [ref=f1e116]: "3"
+            - term [ref=f1e117]: 窗口（秒）
+            - definition [ref=f1e118]: "10"
+            - term [ref=f1e119]: 候选上下文（秒）
+            - definition [ref=f1e120]: "120"
+            - term [ref=f1e121]: 合并间隔（秒）
+            - definition [ref=f1e122]: "5"
+            - term [ref=f1e123]: 候选上限
+            - definition [ref=f1e124]: "3"
+            - term [ref=f1e125]: 弹幕偏移（秒）
+            - definition [ref=f1e126]: "0"
+        - generic [ref=f1e127]:
+          - heading "Worker只读" [level=2] [ref=f1e128]
+          - generic [ref=f1e129]:
+            - term [ref=f1e130]: 空闲退出（秒）
+            - definition [ref=f1e131]: "900"
+            - term [ref=f1e132]: 空闲检查间隔（秒）
+            - definition [ref=f1e133]: "30"
+        - generic [ref=f1e134]:
+          - heading "分析只读" [level=2] [ref=f1e135]
+          - generic [ref=f1e136]:
+            - term [ref=f1e137]: 自动启动
+            - definition [ref=f1e138]: "true"
+            - term [ref=f1e139]: pre_judge_asr
+            - definition [ref=f1e140]: "true"
+            - term [ref=f1e141]: asr_prompt_max_chars
+            - definition [ref=f1e142]: "4000"
+      - group [ref=f1e143]:
+        - generic "ASR 本地依赖与路径诊断" [ref=f1e144] [cursor=pointer]
+      - status
+      - generic [ref=f1e145]: 本机部署 · 后台独立运行

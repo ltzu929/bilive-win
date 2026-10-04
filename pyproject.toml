@@ -15,13 +15,33 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+pipeline = [
+  "setuptools>=68,<81", # zhconv still imports pkg_resources
+  "openai>=1.0",
+  "faster-whisper>=1.0",
+  "av>=11,<19", # faster-whisper 1.2.x still passes metadata_errors to av.open
+  "huggingface-hub>=0.20",
+  "requests>=2.31",
+  "zhconv>=1.4",
+  "toml>=0.10",
+  "bilitool @ git+https://github.com/timerring/bilitool.git@aefaff618235d7f94db35213a1c938126b25cac7",
+]
 dev = [
+  "setuptools>=68,<81",
+  "requests>=2.31",
+  "zhconv>=1.4",
+  "toml>=0.10",
+  "aiohttp>=3.8,<4",
+  "openai>=1.0",
   "pytest>=8.0",
   "httpx>=0.27",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"bilive.recorder" = ["*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

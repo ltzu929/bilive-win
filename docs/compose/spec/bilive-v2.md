@@ -1,7 +1,7 @@
 ---
 feature: bilive-v2
 status: in-progress
-updated: 2026-09-30
+updated: 2026-10-01
 branch: develop
 commits: fdddeb3
 ---
@@ -9,6 +9,10 @@ commits: fdddeb3
 # Bilive 新版（Windows 单机工作台）
 
 ## Report
+
+2026-10-01：人工审核已接入实际场次、持久片段、字幕草稿/版本、任务查询、媒体预览、Worker 成片、staged 暂存和人工批准。
+新增隔离 API/媒体/双进程回归和实际浏览器闭环，详见 [人工审核验收记录](../manual-workbench-acceptance.md)。
+本表任务仍按完整验收保留未完成状态：自动候选、Worker 预检/恢复、真实上传、整场回收与其他功能尚未接通。
 
 ## [S1] Problem
 

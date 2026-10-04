@@ -81,14 +81,19 @@ def _parse_time_from_name(source_relpath: str) -> float | None:
     # 例如 2026-09-23T21-10-00.flv / 2026-09-23 21-10-00.mp4
     m = re.search(r"(20\d{2})-(\d{2})-(\d{2})[T _](\d{2})-(\d{2})-(\d{2})", name)
     if not m:
+        m = re.search(r'(20\d{2})(\d{2})(\d{2})-(\d{2})-(\d{2})-(\d{2})', name)
+    if not m:
         return None
     import datetime
 
-    dt = datetime.datetime(
-        int(m.group(1)), int(m.group(2)), int(m.group(3)),
-        int(m.group(4)), int(m.group(5)), int(m.group(6)),
-        tzinfo=datetime.timezone.utc,
-    )
+    try:
+        dt = datetime.datetime(
+            int(m.group(1)), int(m.group(2)), int(m.group(3)),
+            int(m.group(4)), int(m.group(5)), int(m.group(6)),
+            tzinfo=datetime.timezone.utc,
+        )
+    except ValueError:
+        return None
     return dt.timestamp()
 
 

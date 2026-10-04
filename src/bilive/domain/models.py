@@ -144,6 +144,9 @@ class SubtitleLine:
     text: str
 
     def validate(self) -> None:
+        import math
+        if not math.isfinite(self.start) or not math.isfinite(self.end):
+            raise ValueError("subtitle times must be finite")
         if not self.text or not self.text.strip():
             raise ValueError("subtitle text empty")
         if self.start < 0 or self.end < 0:

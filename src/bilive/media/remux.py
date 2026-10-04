@@ -101,9 +101,15 @@ def verify_mp4(path: Path, log: list[str]) -> float:
 def remux_recording(flv_path: Path, delete_source: bool = True) -> RemuxResult:
     """FLV → MP4 转封装。验证成功才删 FLV；失败保留源和失败任务。"""
     flv_path = flv_path.resolve()
+    mp4_path = flv_path.with_suffix('.mp4')
     if not flv_path.is_file():
+        # Crash after verified replace + FLV removal: finish the same queued action.
+        if mp4_path.is_file():
+            log = []
+            duration = verify_mp4(mp4_path, log)
+            return RemuxResult(str(flv_path), str(mp4_path), verified=True,
+                               deleted_flv=True, duration=duration, log=log)
         raise RemuxError(f"source flv missing: {flv_path}")
-    mp4_path = flv_path.with_suffix(".mp4")
     result = RemuxResult(source_flv=str(flv_path), mp4_path=str(mp4_path))
     tmp = mp4_path.with_suffix(".partial.mp4")
 

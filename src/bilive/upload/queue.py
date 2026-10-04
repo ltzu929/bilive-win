@@ -7,7 +7,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from bilive.db.conn import DatabaseUnavailable, open_connection
+from bilive.db.conn import DatabaseUnavailable, open_connection, require_table
 from bilive.domain.models import UploadStage
 from bilive.domain.states import activation_target_stage, manual_retry_allowed
 
@@ -16,10 +16,30 @@ class UploadQueue:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
 
-    def _conn(self) -> sqlite3.Connection:
+    def _conn(self, *, readonly: bool = False) -> sqlite3.Connection:
         if not self.db_path.is_file():
             raise DatabaseUnavailable(f"database missing: {self.db_path}")
-        return open_connection(self.db_path, readonly=False)
+        conn = open_connection(self.db_path, readonly=readonly)
+        try:
+            require_table(conn, 'upload_queue')
+            require_table(conn, 'upload_history')
+        except Exception:
+            conn.close()
+            raise
+        return conn
+
+    def remove_staged(self, video_path: str) -> None:
+        """Atomically withdraw an unapproved artifact before an edit."""
+        conn = self._conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM upload_queue WHERE video_path=?", (video_path,)).fetchone()
+            if row is None or row["stage"] != "staged" or row["remote_filename"]:
+                raise ValueError("final is protected or its queue state is unknown")
+            conn.execute("DELETE FROM upload_queue WHERE video_path=?", (video_path,))
+            conn.commit()
+        finally:
+            conn.close()
 
     def stage(
         self,
@@ -42,6 +62,7 @@ class UploadQueue:
                     description=excluded.description,
                     tags=excluded.tags,
                     updated_at=excluded.updated_at
+                WHERE upload_queue.stage='staged' AND upload_queue.remote_filename IS NULL
                 """,
                 (
                     video_path,
@@ -53,6 +74,8 @@ class UploadQueue:
                     now,
                 ),
             )
+            if cur.rowcount == 0:
+                raise ValueError('protected upload cannot be restaged or have metadata replaced')
             conn.commit()
             return self.get_by_path(video_path) or {
                 "video_path": video_path,
@@ -62,7 +85,7 @@ class UploadQueue:
             conn.close()
 
     def get_by_path(self, video_path: str) -> dict | None:
-        conn = self._conn()
+        conn = self._conn(readonly=True)
         try:
             row = conn.execute(
                 "SELECT * FROM upload_queue WHERE video_path=?", (video_path,)
@@ -72,7 +95,7 @@ class UploadQueue:
             conn.close()
 
     def list(self, stage: str | None = None, limit: int = 20, offset: int = 0) -> dict:
-        conn = self._conn()
+        conn = self._conn(readonly=True)
         try:
             if stage is None:
                 where = "WHERE stage != ?"
@@ -104,6 +127,7 @@ class UploadQueue:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         conn = self._conn()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT * FROM upload_queue WHERE video_path=?", (video_path,)
             ).fetchone()
@@ -111,7 +135,6 @@ class UploadQueue:
                 raise ValueError("upload row not found")
             if row["stage"] not in {
                 UploadStage.STAGED.value,
-                UploadStage.FAILED.value,
             }:
                 raise ValueError(f"cannot activate from stage={row['stage']}")
             remote = row["remote_filename"]
@@ -168,7 +191,7 @@ class UploadQueue:
         conn = self._conn()
         try:
             conn.execute(
-                "UPDATE upload_queue SET stage=?, updated_at=?, next_attempt_at=NULL WHERE video_path=?",
+                "UPDATE upload_queue SET stage=?, updated_at=?, next_attempt_at=NULL,attempts=0 WHERE video_path=?",
                 (UploadStage.QUEUED.value, now, video_path),
             )
             conn.commit()
@@ -208,6 +231,18 @@ class UploadQueue:
         finally:
             conn.close()
 
+    def mark_publishing(self, video_path: str) -> None:
+        conn = self._conn()
+        try:
+            changed = conn.execute("UPDATE upload_queue SET stage='publishing' WHERE video_path=? "
+                                   "AND stage IN ('uploaded','publishing') AND remote_filename IS NOT NULL",
+                                   (video_path,)).rowcount
+            if changed != 1:
+                raise ValueError("media upload not confirmed")
+            conn.commit()
+        finally:
+            conn.close()
+
     def mark_failed(self, video_path: str, error: str, has_remote: bool = False) -> dict:
         """可重试失败按 next_attempt_at 回到 queued 或 uploaded；此处先落 failed。"""
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -231,20 +266,66 @@ class UploadQueue:
             row = conn.execute(
                 """
                 SELECT * FROM upload_queue
-                WHERE stage=? AND attempts < ?
+                WHERE stage IN (?, ?) AND attempts < ?
                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
                 ORDER BY id LIMIT 1
                 """,
-                (UploadStage.QUEUED.value, max_attempts, now),
+                (UploadStage.QUEUED.value, UploadStage.UPLOADED.value, max_attempts, now),
             ).fetchone()
             if row is None:
                 conn.execute("ROLLBACK")
                 return None
             conn.execute(
                 "UPDATE upload_queue SET stage=?, updated_at=? WHERE id=?",
-                (UploadStage.UPLOADING.value, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), row["id"]),
+                ("publishing" if row["remote_filename"] else "uploading", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), row["id"]),
             )
             conn.execute("COMMIT")
-            return dict(row) | {"stage": UploadStage.UPLOADING.value}
+            return dict(row) | {"stage": "publishing" if row["remote_filename"] else "uploading"}
+        finally:
+            conn.close()
+
+    def peek_next(self, now: float | None = None) -> dict | None:
+        conn = self._conn(readonly=True)
+        try:
+            row = conn.execute("SELECT * FROM upload_queue WHERE stage IN ('queued','uploaded') "
+                               "AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY id LIMIT 1",
+                               (time.time() if now is None else now,)).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def recover_interrupted(self) -> int:
+        """Caller must own the consumer lock before recovering queue state."""
+        conn = self._conn()
+        try:
+            cur = conn.execute("UPDATE upload_queue SET stage=CASE WHEN remote_filename IS NULL OR remote_filename='' "
+                               "THEN 'queued' ELSE 'uploaded' END WHERE stage IN ('uploading','publishing')")
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
+
+    def defer_auth(self, video_path: str, next_attempt: float) -> None:
+        conn = self._conn()
+        try:
+            conn.execute("UPDATE upload_queue SET next_attempt_at=?,last_error='authentication unavailable' WHERE video_path=?",
+                         (next_attempt, video_path))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def schedule_retry(self, video_path: str, error: str, max_attempts: int, delay: float, now: float) -> dict:
+        conn = self._conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM upload_queue WHERE video_path=?", (video_path,)).fetchone()
+            if row is None:
+                raise ValueError("upload row missing")
+            attempts = row["attempts"] + 1
+            stage = "failed" if attempts >= max_attempts else ("uploaded" if row["remote_filename"] else "queued")
+            conn.execute("UPDATE upload_queue SET stage=?,attempts=?,last_error=?,next_attempt_at=? WHERE video_path=?",
+                         (stage,attempts,error,None if stage == "failed" else now+delay,video_path))
+            conn.commit()
+            return {"stage":stage,"attempts":attempts}
         finally:
             conn.close()

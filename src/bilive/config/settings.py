@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +37,7 @@ class BurstConfig:
 
 @dataclass
 class MimoConfig:
+    base_url: str = "https://api.xiaomimimo.com/v1"
     model: str = "mimo-v2.5"
     fps: int = 1
     media_resolution: str = "default"
@@ -60,6 +63,7 @@ class QualityGate:
 
 @dataclass
 class AnalysisConfig:
+    auto_start: bool = False
     pre_judge_asr: bool = True
     asr_prompt_max_chars: int = 4000
 
@@ -74,6 +78,7 @@ class SubtitleConfig:
     asr_vad: bool = True
     padding: float = 6.0
     snap_tolerance: float = 3.0
+    snap_enabled: bool = True
     light_correct: bool = True
 
 
@@ -82,10 +87,29 @@ class EditStyleConfig:
     font_family: str = "Noto Sans SC"
     font_size: int = 20
     margin_v: int = 60
+    alignment: int | None = None
+    outline: float | None = None
+    primary_colour: str | None = None
+    outline_colour: str | None = None
+
+
+@dataclass
+class MultiModalConfig:
+    whisper_engine: str = 'faster-whisper'
+    whisper_vad_min_silence_ms: int = 2000
+    whisper_vad_speech_pad_ms: int = 400
+    unload_audio_model_after_analysis: bool = True
+
+
+@dataclass
+class DashboardConfig:
+    allowed_hosts: list[str] = field(default_factory=list)
 
 
 @dataclass
 class UploadConfig:
+    upload_line: str = 'auto'
+    tid: int = 138
     auto_start: bool = True
     poll_interval: int = 10
     max_attempts: int = 3
@@ -115,6 +139,11 @@ class Settings:
     edit: EditStyleConfig = field(default_factory=EditStyleConfig)
     upload: UploadConfig = field(default_factory=UploadConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
+    multi_modal: MultiModalConfig = field(default_factory=MultiModalConfig)
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+
+    def subtitle_style(self) -> dict:
+        return {'font_name':self.edit.font_family,**{k:v for k,v in vars(self.edit).items() if k != 'font_family' and v is not None}}
 
     def videos_root(self) -> Path:
         return self.paths.videos_dir.resolve()
@@ -163,6 +192,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
             "subtitle",
             "edit",
             "upload",
+            "dashboard",
         ):
             table_key = section
             if section == "burst":
@@ -189,8 +219,31 @@ def load_settings(config_path: Path | None = None) -> Settings:
                 edit = data.get("edit")
                 if isinstance(edit, dict):
                     _apply_table(settings.edit, edit)
+                _apply_table(settings.multi_modal,data.get('multi_modal',{}))
             else:
                 _apply_table(getattr(settings, section), data)
+
+        # Keep the pinned configuration domains and keys usable. Explicit newer
+        # subtitle/edit keys take priority when both forms are present.
+        sliced=raw.get('slice',{}); sub=sliced.get('subtitle',{}); edit={**sliced.get('edit',{}), **raw.get('edit',{})}
+        multi=sliced.get('multi_modal',{}); analysis=sliced.get('analysis',{})
+        for key in ('upload_line','tid'):
+            if key in raw.get('video',{}) and key not in raw.get('upload',{}):
+                setattr(settings.upload,key,raw['video'][key])
+        for old,new in {'whisper_model':'asr_model','whisper_device':'asr_device','whisper_compute_type':'asr_compute_type',
+                        'whisper_batch_size':'asr_batch','whisper_cpu_threads':'asr_cpu_threads','whisper_vad_filter':'asr_vad'}.items():
+            if old in multi and new not in sub:setattr(settings.subtitle,new,multi[old])
+        if 'enable_subtitle_correct' in sub and 'light_correct' not in sub:
+            settings.subtitle.light_correct=sub['enable_subtitle_correct']
+        for old,new in {'trim_asr_padding_seconds':'padding','snap_trim_tolerance':'snap_tolerance'}.items():
+            if old in analysis and new not in sub:setattr(settings.subtitle,new,analysis[old])
+        if 'snap_trim_to_segments' in analysis and 'snap_enabled' not in sub:
+            settings.subtitle.snap_enabled=analysis['snap_trim_to_segments']
+        if 'pre_judge_asr_max_chars' in analysis and 'asr_prompt_max_chars' not in analysis:
+            settings.analysis.asr_prompt_max_chars=analysis['pre_judge_asr_max_chars']
+        for old,new in {'font_name':'font_family','font_size':'font_size','margin_v':'margin_v','alignment':'alignment',
+                        'outline':'outline','primary_colour':'primary_colour','outline_colour':'outline_colour'}.items():
+            if old in sub and new not in edit:setattr(settings.edit,new,sub[old])
 
     env_videos = os.environ.get("BILIVE_VIDEOS_DIR")
     if env_videos:
@@ -212,4 +265,71 @@ def load_settings(config_path: Path | None = None) -> Settings:
     if env_idle_check:
         settings.worker.idle_check_interval = int(env_idle_check)
 
+    if 'BILIVE_DASHBOARD_ALLOWED_HOSTS' in os.environ:
+        settings.dashboard.allowed_hosts=[v.strip().lower() for v in os.environ['BILIVE_DASHBOARD_ALLOWED_HOSTS'].split(',') if v.strip()]
+    for env,key,cast in [('BILIVE_WHISPER_BATCH_SIZE','asr_batch',int),('BILIVE_WHISPER_CPU_THREADS','asr_cpu_threads',int),
+                         ('BILIVE_WHISPER_VAD_FILTER','asr_vad',lambda v:v.lower() in {'1','true','yes','on'}),
+                         ('BILIVE_TRIM_ASR_PADDING_SECONDS','padding',float),('BILIVE_SNAP_TRIM_TOLERANCE','snap_tolerance',float),
+                         ('BILIVE_SNAP_TRIM','snap_enabled',lambda v:v.lower() in {'1','true','yes','on'}),
+                         ('BILIVE_ENABLE_SUBTITLE_CORRECT','light_correct',lambda v:v.lower() in {'1','true','yes','on'})]:
+        if env in os.environ:setattr(settings.subtitle,key,cast(os.environ[env]))
+    for env,key in [('BILIVE_WHISPER_VAD_MIN_SILENCE_MS','whisper_vad_min_silence_ms'),('BILIVE_WHISPER_VAD_SPEECH_PAD_MS','whisper_vad_speech_pad_ms')]:
+        if env in os.environ:setattr(settings.multi_modal,key,int(os.environ[env]))
+    if 'BILIVE_PRE_JUDGE_ASR_MAX_CHARS' in os.environ:
+        settings.analysis.asr_prompt_max_chars=int(os.environ['BILIVE_PRE_JUDGE_ASR_MAX_CHARS'])
+
     return settings
+
+
+def save_analysis_auto_start(config_path: Path, enabled: bool) -> bool:
+    if type(enabled) is not bool:
+        raise ValueError('auto_start must be a boolean')
+    text = config_path.read_text(encoding='utf-8-sig') if config_path.is_file() else ''
+    tomllib.loads(text)
+    # The top-level analysis table overrides legacy slice.analysis values.
+    match = re.search(r'^\s*\[analysis\]\s*(?:#.*)?$', text, re.MULTILINE)
+    assignment = f'auto_start = {str(enabled).lower()}\n'
+    if match:
+        following = re.search(r'^\s*\[', text[match.end():], re.MULTILINE)
+        end = match.end()+following.start() if following else len(text)
+        section = re.sub(r'^\s*auto_start\s*=.*(?:\n|$)', '', text[match.end():end], flags=re.MULTILINE)
+        updated = text[:match.end()]+'\n'+section.strip()+'\n'+assignment+'\n'+text[end:]
+    else:
+        updated = text.rstrip()+'\n\n[analysis]\n'+assignment
+    tomllib.loads(updated)
+    temp = config_path.with_suffix(config_path.suffix+'.tmp')
+    temp.write_text(updated, encoding='utf-8')
+    temp.replace(config_path)
+    return load_settings(config_path).analysis.auto_start
+
+
+def save_subtitle_style(config_path: Path, style: dict) -> dict:
+    """Update only the appearance table, preserving other configuration text."""
+    from bilive.vendor.subtitle_style import validate_style, SubtitleStyle
+    validate_style(style)
+    normalized = SubtitleStyle.from_mapping(style).to_mapping()
+    values = {'font_family': normalized.pop('font_name'), **normalized}
+    text = config_path.read_text(encoding='utf-8-sig') if config_path.is_file() else ''
+    # Refuse to overwrite an invalid configuration file.
+    tomllib.loads(text)
+    match = re.search(r'^\s*\[edit\]\s*(?:#.*)?$', text, re.MULTILINE)
+    end = None
+    if match:
+        following = re.search(r'^\s*\[', text[match.end():], re.MULTILINE)
+        end = match.end()+following.start() if following else len(text)
+        section = text[match.end():end]
+        keys = '|'.join(re.escape(k) for k in EditStyleConfig.__dataclass_fields__)
+        section = re.sub(rf'^\s*(?:{keys})\s*=.*(?:\n|$)', '', section, flags=re.MULTILINE)
+    else:
+        section = '\n'
+    assignments = '\n'.join(f'{key} = {json.dumps(value, ensure_ascii=False)}' for key, value in values.items())+'\n'
+    section = '\n'+section.strip()+'\n' if section.strip() else '\n'
+    if match:
+        updated = text[:match.end()]+section+assignments+'\n'+text[end:]
+    else:
+        updated = text.rstrip()+'\n\n[edit]\n'+assignments
+    tomllib.loads(updated)
+    temp = config_path.with_suffix(config_path.suffix+'.tmp')
+    temp.write_text(updated, encoding='utf-8')
+    temp.replace(config_path)
+    return load_settings(config_path).subtitle_style()

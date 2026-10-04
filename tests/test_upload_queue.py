@@ -19,6 +19,28 @@ def test_missing_db_is_unavailable(tmp_path: Path):
         q.list()
 
 
+@pytest.mark.parametrize('table', ['upload_queue','upload_history'])
+def test_missing_table_is_unavailable_without_repair(queue, table):
+    import sqlite3
+    with sqlite3.connect(queue.db_path) as conn:
+        conn.execute(f'DROP TABLE {table}')
+    for read in (lambda:queue.list(),lambda:queue.get_by_path('/v/a.mp4'),lambda:queue.peek_next()):
+        with pytest.raises(DatabaseUnavailable,match='table missing'):
+            read()
+    with sqlite3.connect(queue.db_path) as conn:
+        assert conn.execute('SELECT name FROM sqlite_master WHERE name=?',(table,)).fetchone() is None
+
+
+def test_queue_read_connections_cannot_write(queue):
+    import sqlite3
+    conn=queue._conn(readonly=True)
+    try:
+        with pytest.raises(sqlite3.OperationalError,match='readonly'):
+            conn.execute("DELETE FROM upload_queue")
+    finally:
+        conn.close()
+
+
 def test_staged_is_invisible_in_default_list(queue: UploadQueue):
     queue.stage("/v/a.mp4", title="A")
     listing = queue.list()
@@ -91,3 +113,36 @@ def test_withdraw_rejects_published(queue: UploadQueue):
     queue.mark_published("/v/h.mp4", "BV1h")
     with pytest.raises(ValueError):
         queue.withdraw("/v/h.mp4")
+
+
+def test_restage_cannot_change_protected_metadata(queue):
+    queue.stage('/v/protected.mp4',title='approved title')
+    queue.activate('/v/protected.mp4')
+    with pytest.raises(ValueError):queue.stage('/v/protected.mp4',title='replacement')
+    assert queue.get_by_path('/v/protected.mp4')['title'] == 'approved title'
+
+
+def _queue_race(db,barrier,results,action):
+    q=UploadQueue(Path(db));barrier.wait(timeout=10)
+    try:
+        getattr(q,action)('/v/race.mp4');results.put((action,'done'))
+    except ValueError:
+        results.put((action,'conflict'))
+
+
+def test_two_process_activation_and_staged_removal_are_atomic(queue):
+    import multiprocessing
+    queue.stage('/v/race.mp4',title='race')
+    ctx=multiprocessing.get_context('spawn');barrier=ctx.Barrier(2);results=ctx.Queue()
+    processes=[ctx.Process(target=_queue_race,args=(str(queue.db_path),barrier,results,action))
+               for action in ('activate','remove_staged')]
+    try:
+        for p in processes:p.start()
+        for p in processes:p.join(timeout=15);assert p.exitcode == 0
+        outcomes=dict(results.get(timeout=5) for _ in processes)
+        assert sorted(outcomes.values()) == ['conflict','done']
+        row=queue.get_by_path('/v/race.mp4')
+        assert (row is None) if outcomes['remove_staged']=='done' else row['stage']=='queued'
+    finally:
+        for p in processes:
+            if p.is_alive():p.terminate();p.join(timeout=5)

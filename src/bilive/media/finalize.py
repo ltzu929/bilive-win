@@ -44,6 +44,11 @@ def verify_media(path: Path) -> None:
     """部分 ffmpeg 输出不得记成功：存在 + 大小>0 + ffprobe 可读。"""
     if not path.is_file() or path.stat().st_size <= 0:
         raise PipelineError(f"partial or missing output: {path}")
+    from bilive.media.remux import RemuxError, verify_mp4
+    try:
+        verify_mp4(path, [])
+    except RemuxError as exc:
+        raise PipelineError(str(exc)) from exc
 
 
 def ensure_raw_cut(
@@ -64,11 +69,10 @@ def ensure_raw_cut(
     _run_ffmpeg(
         [
             "ffmpeg", "-y",
-            "-ss", f"{start:.3f}",
-            "-to", f"{end:.3f}",
             "-i", str(source),
-            "-c", "copy",
-            "-avoid_negative_ts", "make_zero",
+            "-ss", f"{start:.3f}",
+            "-t", f"{end - start:.3f}",
+            "-c:v", "libx264", "-preset", "fast", "-c:a", "aac",
             str(tmp),
         ],
         log,
@@ -148,8 +152,26 @@ class Finalizer:
             )
 
         duration = source_end - source_start
+        from bilive.media.remux import _ffprobe_duration
+        import math
+        if not all(math.isfinite(x) for x in (source_start, source_end)) or source_start < 0 or duration <= 0:
+            raise PipelineError("invalid source range")
+        if source_end > _ffprobe_duration(source, log) + 0.01:
+            raise PipelineError("range exceeds source duration")
+        # A successful raw cut only belongs to the range that created it.
+        cut_meta = paths["raw"].with_suffix(".range.json")
+        cut_key = {"source": source_relpath, "start": source_start, "end": source_end}
+        if not cut_meta.is_file() or json.loads(cut_meta.read_text(encoding="utf-8")) != cut_key:
+            # Preserve the previous raw until a new cut has completed.
+            fresh = paths["raw"].with_name("raw_next.mp4")
+            fresh.unlink(missing_ok=True)
+            ensure_raw_cut(source, fresh, source_start, source_end, log)
+            fresh.replace(paths["raw"])
+            cut_meta.write_text(json.dumps(cut_key), encoding="utf-8")
         ensure_raw_cut(source, paths["raw"], source_start, source_end, log)
-        self.subtitles.write_ass(segment_id, paths["ass"])
+        segment_path = self.artifacts_root / 'segments' / f'{segment_id}.json'
+        appearance = json.loads(segment_path.read_text(encoding='utf-8')).get('subtitle_style', {}) if segment_path.is_file() else {}
+        self.subtitles.write_ass(segment_id, paths["ass"], appearance)
         burn_subtitles(paths["raw"], paths["ass"], paths["final"], log)
 
         meta = {
@@ -158,6 +180,7 @@ class Finalizer:
             "source_start": source_start,
             "source_end": source_end,
             "revision": revision,
+            "subtitle_style": appearance,
             "duration": duration,
             "raw_path": str(paths["raw"]),
             "final_path": str(paths["final"]),

@@ -1,0 +1,135 @@
+"""Install the repository-maintained blrec FPS guard."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.metadata
+import importlib.util
+import os
+import shutil
+from pathlib import Path
+
+
+EXPECTED_BLREC_VERSION = "2.0.0b4"
+ORIGINAL_SOURCE_SHA256 = (
+    "a00f9e5d95483d50f68f1ed4dbe60193f2930181a29e1b402ceade3e8e07843f"
+)
+PATCHED_SOURCE_SHA256 = (
+    "a907201f836c3b7540a45116af1a556a6cff1d2c9e87738efca65e20fdd353ce"
+)
+
+# The archived Windows wheel uses CRLF; official PyPI beta.4 uses LF.
+# Only these byte-identical-except-newline upstream sources are accepted.
+ORIGINAL_SOURCE_SHA256_LF = '49b92864e17ec3c5c31fd153b1264c2ce46f8509c543d637bb7d11317b1b8731'
+PATCHED_SOURCE_SHA256_LF = '786f12925d2910cda07e995a1209d16c99d1dee0fc936603e005e8cc28a0278a'
+
+
+class PatchError(RuntimeError):
+    """Raised when the installed blrec source is not the expected build."""
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _patched_source(original: bytes) -> bytes:
+    text = original.decode("utf-8")
+    newline = "\r\n" if "\r\n" in text else "\n"
+
+    import_anchor = f"from loguru import logger{newline}"
+    import_replacement = (
+        f"from loguru import logger{newline}{newline}"
+        f"from bilive.vendor.blrec_compat import normalize_frame_rate{newline}"
+    )
+    parameter_block = newline.join(
+        [
+            "                fps = metadata.get('fps') or metadata.get('framerate')",
+            "",
+            "                if not fps:",
+            "                    return",
+            "",
+            "                frame_rate = fps",
+            "                video_frame_interval = math.ceil(1000 / frame_rate)",
+        ]
+    ) + newline
+    patched_block = newline.join(
+        [
+            "                fps = metadata.get('fps') or metadata.get('framerate')",
+            "                frame_rate = normalize_frame_rate(fps)",
+            "                video_frame_interval = math.ceil(1000 / frame_rate)",
+        ]
+    ) + newline
+
+    if text.count(import_anchor) != 1 or text.count(parameter_block) != 1:
+        raise PatchError("expected blrec FPS source anchors were not found")
+
+    text = text.replace(import_anchor, import_replacement, 1)
+    text = text.replace(parameter_block, patched_block, 1)
+    return text.encode("utf-8")
+
+
+def patch_blrec_source(source_path: Path, installed_version: str) -> bool:
+    """Patch a known blrec source file and return whether it changed."""
+    # The Bilive wheel carries a local PEP 440 version suffix so deployments
+    # cannot accidentally fall back to the unmodified upstream webapp.  The
+    # FPS patch still targets the same beta.4 source payload.
+    base_version = installed_version.split("+", 1)[0]
+    if base_version != EXPECTED_BLREC_VERSION:
+        raise PatchError(
+            f"unsupported blrec version {installed_version!r}; "
+            f"expected {EXPECTED_BLREC_VERSION!r}"
+        )
+
+    source_path = Path(source_path)
+    current = source_path.read_bytes()
+    current_hash = _sha256(current)
+    if current_hash in {PATCHED_SOURCE_SHA256, PATCHED_SOURCE_SHA256_LF}:
+        return False
+    if current_hash not in {ORIGINAL_SOURCE_SHA256, ORIGINAL_SOURCE_SHA256_LF}:
+        raise PatchError(
+            f"unexpected blrec fix.py hash {current_hash}; refusing to patch"
+        )
+
+    patched = _patched_source(current)
+    patched_hash = _sha256(patched)
+    expected = PATCHED_SOURCE_SHA256_LF if current_hash == ORIGINAL_SOURCE_SHA256_LF else PATCHED_SOURCE_SHA256
+    if patched_hash != expected:
+        raise PatchError(
+            f"generated blrec patch hash {patched_hash} does not match expected hash"
+        )
+    compile(patched, str(source_path), "exec")
+
+    backup = source_path.with_suffix(source_path.suffix + ".before-bilive-fps-guard")
+    if not backup.exists():
+        shutil.copy2(source_path, backup)
+
+    temporary = source_path.with_suffix(source_path.suffix + ".bilive-tmp")
+    temporary.write_bytes(patched)
+    os.chmod(temporary, source_path.stat().st_mode)
+    os.replace(temporary, source_path)
+    return True
+
+
+def _installed_fix_path() -> Path:
+    spec = importlib.util.find_spec("blrec.flv.operators.fix")
+    if spec is None or spec.origin is None:
+        raise PatchError("cannot locate installed blrec.flv.operators.fix")
+    return Path(spec.origin)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", type=Path, help="override fix.py path for diagnostics")
+    parser.add_argument("--version", help="override detected version for diagnostics")
+    args = parser.parse_args(argv)
+
+    version = args.version or importlib.metadata.version("blrec")
+    target = args.target or _installed_fix_path()
+    changed = patch_blrec_source(target, version)
+    print(f"blrec FPS guard: {'installed' if changed else 'already installed'} ({target})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

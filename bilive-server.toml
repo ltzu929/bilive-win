@@ -31,12 +31,16 @@ completeness = 0.80
 confidence = 0.80
 
 [slice.analysis]
+auto_start = false
 pre_judge_asr = true
 asr_prompt_max_chars = 4000
 
 [slice.multi_modal]
-# 多模态判断入口开关，保持与旧基线一致
-enabled = true
+# ASR 细节沿用旧配置域；视觉判断由 slice.mimo 配置。
+whisper_engine = "faster-whisper"
+whisper_vad_min_silence_ms = 2000
+whisper_vad_speech_pad_ms = 400
+unload_audio_model_after_analysis = true
 
 [slice.subtitle]
 asr_model = "large-v3"
@@ -63,5 +67,5 @@ auth_retry = 120
 delete_after_success = true
 
 [dashboard]
-# 仅作展示摘要；热改需另有实现，不在此处承诺
+# 允许的额外请求 Host，修改后重启；不放宽同源写入规则。
 allowed_hosts = []
