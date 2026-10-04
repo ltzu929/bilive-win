@@ -151,6 +151,19 @@ class Workbench:
         if expected != s["revision"]:
             raise ActionConflict("revision conflict; reload the segment and keep your draft")
 
+    def keep(self, sid: str, expected: int) -> dict:
+        """Confirm the editorial decision without changing the media revision."""
+        with self.lock():
+            s = self.load(sid)
+            self.check_revision(s, expected)
+            self.editable(s)
+            s['technical_failure'] = bool(s.get('technical_failure') or s.get('processing_error') or s['decision'] == 'judge_failed')
+            s.update(decision='manual_keep', human_reviewed=True)
+            if s.get('state') == 'needs_review':
+                s['state'] = 'awaiting_publish' if self.valid_final(s) else 'needs_finalize'
+            self.save(s)
+            return self.detail(sid)
+
     def save_metadata(self, sid: str, expected: int, title: str, description: str, tags: list[str]) -> dict:
         title = title.strip()
         tags = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))

@@ -9,11 +9,11 @@ const uploadLabels = {
   failed: "失败 / 需核对",
 };
 const uploadTabs = [
-  ["all", "全部"],
-  ["waiting", "待确认"],
-  ["processing", "处理中"],
-  ["published", "已发布"],
+  ["all", "当前任务"],
   ["failed", "失败与需核对"],
+  ["processing", "待执行 / 发布中"],
+  ["waiting", "返回成片确认"],
+  ["published", "发布历史"],
 ];
 const uploadGroups = {
   all: [
@@ -22,7 +22,6 @@ const uploadGroups = {
     "uploading",
     "uploaded",
     "publishing",
-    "published",
     "failed",
   ],
   waiting: ["staged"],
@@ -60,7 +59,7 @@ async function renderPublish() {
   clearTimeout(reviewTimer);
   const current = beginPage("publish");
   document.getElementById("main").innerHTML =
-    pageHead("发布队列", "成片生成与允许发布是两个步骤") +
+    pageHead("发布队列", "批准后自动执行 · 异常优先处理") +
     emptyState("正在读取完整队列…");
   try {
     const lists = await Promise.all(
@@ -71,7 +70,7 @@ async function renderPublish() {
     if (!current()) return;
     publicationView.items = lists
       .flat()
-      .sort((a, b) => Number(a.id) - Number(b.id));
+      .sort((a, b) => (a.stage === "failed" ? 0 : a.stage === "staged" ? 2 : 1) - (b.stage === "failed" ? 0 : b.stage === "staged" ? 2 : 1) || Number(b.id) - Number(a.id));
     publicationView.offset = Math.min(
       publicationView.offset,
       Math.max(0, Math.ceil(publicationView.items.length / 20) - 1) * 20,
@@ -98,7 +97,7 @@ function drawPublish() {
   document.getElementById("main").innerHTML =
     pageHead(
       "发布队列",
-      "成片生成与允许发布是两个步骤",
+      "批准后自动执行 · 异常优先处理",
       `<button class="btn btn-secondary" id="publish-refresh">${icon("refresh")}刷新</button>`,
     ) +
     `<div class="master-detail publish-layout"><section class="master-column">${tabsHTML(uploadTabs, view.tab, "data-publish-tab")}<div class="master-scroll card table-wrap"><table class="list publish-table"><thead><tr><th>视频信息</th><th>状态</th><th>最新进度</th><th>操作</th></tr></thead><tbody>${rows.map((r) => `<tr data-publish-row="${r.id}" class="${r.id === view.selected ? "selected" : ""}"><td><div class="video-cell"><div class="thumb" ${r.segment_id ? `data-media-url="${htmlEscape(apiURL("/api/media/final/" + encodeURIComponent(r.segment_id)))}"` : ""}>${mediaPlaceholder("预览不可用")}</div><div><h3>${htmlEscape(r.title || fileName(r.video_path))}</h3><p>${htmlEscape(beijingTime(r.created_at))}</p><small>${r.source_task_id ? "已关联源录播" : "来源未关联"}</small></div></div></td><td><span class="text-${uploadTone(r)}">${htmlEscape(uploadLabels[r.stage] || r.stage)}</span></td><td><div class="stage-progress"><span>${htmlEscape(progress(r))}</span><div class="stage-track" aria-label="${htmlEscape(progress(r))}">${["媒体上传", "投稿", "发布"].map((label, i) => `<span title="${label}" class="${(i === 0 && !!r.remote_filename) || (i === 1 && !!r.bvid) || (i === 2 && r.stage === "published") ? "complete" : ""}"></span>`).join("")}</div></div></td><td><button class="text-button">${r.stage === "published" ? "查看结果" : "查看详情"}</button></td></tr>`).join("") || '<tr><td colspan="4">当前筛选没有记录。</td></tr>'}</tbody></table></div>${pager(view.offset, view.items.length, "publish")}</section><aside class="detail-panel">${row ? publishDetail(row) : emptyState("选择视频查看详情")}</aside></div>`;
@@ -270,7 +269,7 @@ function drawNativeRooms() {
   document.getElementById("main").innerHTML =
     pageHead(
       "直播间",
-      "实时监控直播状态与录制任务",
+      `本页 ${view.items.length} 个直播间 · ${view.items.filter(r => r.room_info?.live_status === 1).length} 个直播中 · ${view.items.filter(r => r.task_status?.running_status === "recording").length} 个正在录制`,
       `<button id="rooms-refresh" class="icon-button" aria-label="刷新">${icon("refresh")}</button><button class="btn btn-primary" data-dialog="room-dialog">添加直播间</button>`,
     ) +
     `<div class="master-detail live-layout"><section class="master-column"><div class="master-scroll card table-wrap"><table class="list live-table"><colgroup><col><col class="room-state-col"><col class="record-state-col"><col class="record-duration-col"><col class="room-action-col"></colgroup><thead><tr><th>主播/直播间</th><th>直播状态</th><th>录制状态</th><th>已录时长</th><th>操作</th></tr></thead><tbody>${
@@ -279,7 +278,7 @@ function drawNativeRooms() {
           const info = r.room_info || {},
             s = r.task_status || {},
             live = info.live_status === 1;
-          return `<tr data-room-select="${roomId(r)}" class="${roomId(r) === view.selected ? "selected" : ""}"><td><div class="video-cell"><div class="thumb">${roomCoverHTML(r)}</div><div><h3 title="${htmlEscape(roomName(r))}">${htmlEscape(roomName(r))}</h3><p title="${htmlEscape(info.title || "暂无直播标题")}">${htmlEscape(info.title || "暂无直播标题")}</p><small title="房间 ${roomId(r)}">房间 ${roomId(r)}</small></div></div></td><td><span class="live-state ${live ? "text-red" : "muted"}"><i></i>${live ? "直播中" : info.live_status == null ? "状态未知" : "未开播"}</span></td><td>${statusBadge(!s.recorder_enabled ? "已暂停" : recordingLabels[s.running_status] || "状态未知", s.running_status === "recording" && s.recorder_enabled ? "blue" : "muted")}</td><td class="num">${recordedTime(s.rec_elapsed)}</td><td><button class="text-button">查看</button></td></tr>`;
+          return `<tr data-room-select="${roomId(r)}" class="${roomId(r) === view.selected ? "selected" : ""}"><td><div class="video-cell"><div class="thumb">${roomCoverHTML(r)}</div><div><h3 title="${htmlEscape(roomName(r))}">${htmlEscape(roomName(r))}</h3><p title="${htmlEscape(info.title || "暂无直播标题")}">${htmlEscape(info.title || "暂无直播标题")}</p><small title="房间 ${roomId(r)}">房间 ${roomId(r)}</small></div></div></td><td><span class="live-state ${live ? "text-red" : "muted"}"><i></i>${live ? "直播中" : info.live_status == null ? "状态未知" : "未开播"}</span></td><td>${statusBadge(!s.recorder_enabled ? "自动录制关闭" : recordingLabels[s.running_status] || "状态未知", s.running_status === "recording" && s.recorder_enabled ? "blue" : "muted")}</td><td class="num">${recordedTime(s.rec_elapsed)}</td><td><button class="text-button">查看</button></td></tr>`;
         })
         .join("") ||
       '<tr><td colspan="5">没有配置直播间，请添加房间。</td></tr>'
@@ -494,18 +493,22 @@ function recycleDetail(r, now) {
 }
 
 const settingsView = {
-  tab: "services",
+  tab: "processing",
   services: null,
   config: null,
   waiting: null,
   index: null,
   subtitleDraft: null,
+  automationDraft: null,
+  saving: false,
 };
 const settingsTabs = [
-  ["services", "服务状态"],
-  ["processing", "处理参数"],
-  ["paths", "路径与账号"],
-  ["subtitles", "字幕默认样式"],
+  ["processing", "自动化"],
+  ["subtitles", "字幕"],
+  ["publish", "发布"],
+  ["paths", "存储与清理"],
+  ["services", "系统"],
+  ["advanced", "高级"],
 ];
 async function renderRuntimeSettings() {
   clearTimeout(reviewTimer);
@@ -626,7 +629,9 @@ function bindSubtitleSettings() {
     if (style.outline > 0) ctx.strokeText(text,x,y); ctx.fillText(text,x,y); ctx.globalAlpha = 1;
   }
   form.oninput = () => {
-    settingsView.subtitleDraft = readStyle(); preview(settingsView.subtitleDraft);
+    const style = readStyle();
+    settingsView.subtitleDraft = JSON.stringify(style) === JSON.stringify(original) ? null : style; preview(style);
+    updateSettingsSaveBar();
     setMessage("subtitle-settings-message", "字幕设置未保存");
   };
   document.getElementById("subtitle-preset").onclick = () => {
@@ -634,49 +639,60 @@ function bindSubtitleSettings() {
     drawSettings();
   };
   document.getElementById("subtitle-settings-reset").onclick = () => { settingsView.subtitleDraft = null; drawSettings(); };
-  form.onsubmit = async event => {
-    event.preventDefault();
-    const button = document.getElementById("subtitle-settings-save"), epoch = pageEpoch;
-    const submitted = readStyle();
-    const controls = [...form.querySelectorAll('input, select, button'), document.getElementById('subtitle-preset')];
-    controls.forEach(control => { control.disabled = true; });
-    try {
-      const result = await reviewAPI("/api/config/subtitle-style", {style: submitted});
-      settingsView.subtitleDraft = null;
-      settingsView.config.settings.edit = {font_family: result.style.font_name, ...result.style};
-      if (pageKey() === "settings" && pageEpoch === epoch) {
-        drawSettings(); setMessage("subtitle-settings-message", "字幕设置已保存，新片段会使用这些设置。");
-      }
-    } catch (error) {
-      if (button.isConnected) { controls.forEach(control => { control.disabled = false; }); setMessage("subtitle-settings-message", `保存失败：${error.message}。设置草稿已保留。`); }
-    }
-  };
+  form.onsubmit = event => { event.preventDefault(); saveSettingsChanges(); };
   preview(settingsView.subtitleDraft || original);
+}
+function settingsDirtyCount() {
+  const original = subtitleStyleFromSettings(settingsView.config?.settings?.edit);
+  const style = settingsView.subtitleDraft;
+  return (style ? Object.keys(original).filter(key => original[key] !== style[key]).length : 0) +
+    (settingsView.automationDraft == null ? 0 : 1);
+}
+function updateSettingsSaveBar() {
+  const count = settingsDirtyCount(), bar = document.getElementById("settings-save-bar");
+  if (!bar) return;
+  bar.hidden = count === 0;
+  setMessage("settings-dirty-count", `${count} 项未保存修改 · 保存后立即用于新任务`);
+  document.getElementById("settings-save-all").disabled = settingsView.saving;
+  document.querySelectorAll("#subtitle-settings-save, #analysis-automation-save, #subtitle-settings-reset").forEach(button => button.hidden = true);
+}
+async function saveSettingsChanges() {
+  if (settingsView.saving || !settingsDirtyCount()) return;
+  const view = settingsView;
+  view.saving = true;
+  const style = view.subtitleDraft, automation = view.automationDraft;
+  document.querySelectorAll('.settings-layout input, .settings-layout select, .settings-layout button, #settings-discard').forEach(control => control.disabled = true);
+  updateSettingsSaveBar();
+  try {
+    if (style) {
+      const result = await reviewAPI("/api/config/subtitle-style", {style});
+      view.config.settings.edit = {font_family: result.style.font_name, ...result.style};
+      view.subtitleDraft = null;
+    }
+    if (automation != null) {
+      const result = await reviewAPI("/api/config/analysis-automation", {auto_start: automation});
+      view.config.settings.analysis.auto_start = result.auto_start;
+      view.automationDraft = null;
+    }
+    if (pageKey() === "settings") { drawSettings(); setMessage("runtime-message", "更改已保存，立即用于新任务和新片段。已有片段与已开始任务保持当前配置。"); }
+  } catch (error) {
+    if (pageKey() === "settings") {
+      drawSettings();
+      setMessage("runtime-message", `保存未全部完成：${error.message}。未成功保存的修改仍保留；已保存的分区已生效。`);
+    }
+  } finally {
+    view.saving = false;
+    updateSettingsSaveBar();
+  }
 }
 function drawSettings() {
   const view = settingsView,
     c = view.config,
     s = c.settings || {},
     services = view.services;
-  const summary = `<section class="card card-pad"><div class="section-heading"><h2>当前处理配置（只读摘要）</h2><button class="text-button" data-settings-jump="processing">查看处理参数 ${icon("chevron-right")}</button></div>${definitionRows(
-    [
-      ["自动 AI 切片", s.analysis?.auto_start === true ? "已开启" : "已关闭 · 手动选择录播"],
-      ["AI 判断", `MiMo（${s.mimo?.model || "—"}）`],
-      ["语音转写", `faster-whisper（${s.subtitle?.asr_model || "—"}）`],
-      [
-        "质量门",
-        `质量 ${s.quality?.quality ?? "—"} · 完整度 ${s.quality?.completeness ?? "—"} · 置信度 ${s.quality?.confidence ?? "—"}`,
-      ],
-      [
-        "请求并发 · 编码并发",
-        `${s.mimo?.request_concurrency ?? "—"} · ${s.mimo?.encode_concurrency ?? "—"}`,
-      ],
-    ],
-  )}</section>`;
-  const paths = `<section class="card card-pad"><div class="section-heading"><h2>路径与账号摘要</h2><button class="text-button" data-settings-jump="paths">查看路径与账号 ${icon("chevron-right")}</button></div><div class="path-row">${icon("folder")}<span>本机媒体目录</span><strong class="${c.diagnostics.videos_available ? "text-green" : "text-orange"}">${c.diagnostics.videos_available ? "已配置 · 可访问" : "目录不可访问"}</strong></div><div class="path-row">${icon("user")}<span>投稿账号</span><div><strong>${c.diagnostics.cookie_configured ? "凭据已配置，登录状态未检查" : "凭据未配置"}</strong><p class="muted">已配置不代表已登录或可正常使用，请在发布时确认。</p></div></div><div class="path-row">${icon("database")}<span>索引接口</span><div><strong class="${Array.isArray(view.index) ? "text-green" : "text-orange"}">${Array.isArray(view.index) ? "可用 · 只读镜像" : "不可用 / 尚未验证"}</strong><p class="muted">用于检索和匹配历史素材，不进行源文件写入操作。</p></div></div></section>`;
   let body;
   if (view.tab === "services")
-    body = `<div class="settings-top"><section class="card card-pad"><h2>服务状态</h2>${[
+    body = `<div class="settings-top"><section class="card card-pad"><h2>本机服务</h2><p>${[services.recorder?.state, services.workbench?.state].every(state => ["ok", "running", "idle"].includes(state)) ? "录制服务与工作台正常" : "部分服务不可用，请展开检查"} · ${services.worker?.busy ? "后台有任务正在处理" : "处理服务按需启动"}</p><details><summary>服务详情与手动控制</summary>${[
       ["recorder", "录制服务", "video", "录制任务与浏览器独立运行"],
       ["workbench", "工作台", "device-desktop", "界面服务"],
       ["worker", "处理 Worker", "settings", "有任务时按需启动"],
@@ -699,52 +715,45 @@ function drawSettings() {
       })
       .join(
         "",
-      )}<details class="secondary-controls"><summary>其他服务控制 / 依赖诊断</summary><div class="action-row"><button class="btn btn-secondary" data-runtime-path="/api/uploader/start">启动上传消费者</button><button class="btn btn-secondary" data-runtime-path="/api/uploader/stop">停止上传消费者</button></div><p class="muted">停止会等待当前操作完成，剩余任务留在队列。</p><h3>ASR 本地依赖</h3><p>设备可见和模型缓存不等于推理成功。</p><pre>${htmlEscape(JSON.stringify({ asr: c.asr, diagnostics: c.diagnostics }, null, 2))}</pre></details></section><section class="card card-pad task-overview"><h2>任务概况</h2><div class="overview-row">${icon("file-text")}<span>待处理任务</span><strong class="big-num">—</strong></div><p class="muted">${services.worker?.busy ? "当前有持久任务" : "当前未检测到持久任务"} · 总数未提供</p><div class="overview-row">${icon("clock")}<span>等待发布确认</span><strong class="big-num">${view.waiting?.total ?? "—"}</strong></div><hr><p class="hint">${icon("info-circle")}网页关闭不影响后台任务，本机服务将继续在后台独立运行。</p></section></div>${summary}${paths}`;
+      )}<details class="secondary-controls"><summary>其他服务控制 / 依赖诊断</summary><div class="action-row"><button class="btn btn-secondary" data-runtime-path="/api/uploader/start">启动上传消费者</button><button class="btn btn-secondary" data-runtime-path="/api/uploader/stop">停止上传消费者</button></div><p class="muted">停止会等待当前操作完成，剩余任务留在队列。</p><h3>ASR 本地依赖</h3><p>设备可见和模型缓存不等于推理成功。</p><pre>${htmlEscape(JSON.stringify({ asr: c.asr, diagnostics: c.diagnostics }, null, 2))}</pre></details></details></section><section class="card card-pad task-overview"><h2>任务概况</h2><div class="overview-row">${icon("file-text")}<span>待处理任务</span><strong class="big-num">—</strong></div><p class="muted">${services.worker?.busy ? "当前有持久任务" : "当前未检测到持久任务"} · 总数未提供</p><div class="overview-row">${icon("clock")}<span>等待发布确认</span><strong class="big-num">${view.waiting?.total ?? "—"}</strong></div><hr><p class="hint">${icon("info-circle")}网页关闭不影响后台任务，本机服务将继续在后台独立运行。</p></section></div>`;
   else if (view.tab === "processing")
     body =
-      `<section class="card card-pad"><h2>录播切片方式</h2><form id="analysis-automation-form"><label><input id="analysis-auto-start" type="checkbox" ${s.analysis?.auto_start === true ? "checked" : ""}> 录制结束后自动 AI 切片</label><p class="muted">默认关闭。开发期间由你在录播库选择场次，再点击“AI 分析本场录播”。</p><p class="hint">开启并保存后，新完成的录播会自动将候选视频发送给 AI 分析并生成待审核片段。发布仍需人工确认。</p><div class="action-row"><button id="analysis-automation-save" class="btn btn-primary" type="submit">保存切片设置</button><span id="analysis-automation-message" role="status">${s.analysis?.auto_start === true ? "当前已开启自动切片" : "当前已关闭自动切片"}</span></div><p class="hint">关闭会取消尚未开始的自动分析；已经开始的分析完成当前任务。保存立即生效，已有录播不会补发。</p></form></section>` + summary +
-      `<div class="config-grid">${configSection("MiMo 判断", s.mimo)}${configSection("质量门", s.quality)}${configSection("候选召回", s.burst)}${configSection("Worker", s.worker)}${configSection("分析", s.analysis)}</div>`;
+      `<section class="card card-pad"><h2>录播切片方式</h2><form id="analysis-automation-form"><label><input id="analysis-auto-start" type="checkbox" ${(view.automationDraft ?? s.analysis?.auto_start) === true ? "checked" : ""}> 录制结束后自动 AI 切片</label><p class="muted">默认关闭。开发期间由你在录播库选择场次，再点击“AI 分析本场录播”。</p><p class="hint">开启并保存后，新完成的录播会自动将候选视频发送给 AI 分析并生成待审核片段。发布仍需人工确认。</p><div class="action-row"><button id="analysis-automation-save" class="btn btn-primary" type="submit">保存切片设置</button><span id="analysis-automation-message" role="status">${s.analysis?.auto_start === true ? "当前已开启自动切片" : "当前已关闭自动切片"}</span></div><p class="hint">关闭会取消尚未开始的自动分析；已经开始的分析完成当前任务。保存立即生效，已有录播不会补发。</p></form></section>`;
   else if (view.tab === "paths")
-    body =
-      paths +
-      configSection("配置路径", s.paths) +
-      notice(
-        "配置读取自当前服务；修改配置文件后需重启相关服务。凭据内容不会在此展示。",
-      );
+    body = configSection("媒体目录", {videos_dir: s.paths?.videos_dir}) +
+      notice("当前生效策略：第 5 天提醒，第 7 天到期排回收，移入 Windows 回收站。正在执行的任务受保护。") +
+      '<p class="muted">5 天清理、发布后 24 小时清理和手动保留尚未接入当前服务。</p><a class="btn btn-secondary" href="#/recycle">查看到期与回收记录</a>';
+  else if (view.tab === "publish")
+    body = `<section class="card card-pad"><h2>投稿账号</h2><p>${c.diagnostics.cookie_configured ? "凭据已配置 · 登录有效性尚未检查" : "尚未配置投稿凭据"}</p><p class="muted">成片阶段确认标题、简介与标签，批准后进入发布队列。</p></section>` +
+      configSection("全局发布配置", s.upload) +
+      '<a class="btn btn-secondary" href="#/streamer">编辑主播默认简介与标签</a>';
+  else if (view.tab === "advanced")
+    body = notice("以下参数由当前服务提供只读摘要；修改配置文件后重启相关服务生效。网页编辑接口尚未接入。") +
+      `<div class="config-grid">${configSection("AI 分析", s.mimo)}${configSection("候选召回", s.burst)}${configSection("质量门", s.quality)}${configSection("转写与对齐", s.subtitle)}${configSection("分析参数", s.analysis)}${configSection("Worker", s.worker)}${configSection("配置路径", s.paths)}</div>` +
+      `<details class="diagnostics"><summary>本地依赖与模型诊断</summary><p>设备可见和模型缓存不等于推理成功。</p><pre>${htmlEscape(JSON.stringify({asr: c.asr, diagnostics: c.diagnostics}, null, 2))}</pre></details>`;
   else
-    body =
-      subtitleStyleSettingsHTML(s.edit) + `<div class="config-grid">${configSection("字幕转写与对齐", s.subtitle)}</div>` +
-      notice(
-        "已批准发布的片段受保护；修改默认设置不会改写已上传的视频。",
-      );
+    body = subtitleStyleSettingsHTML(s.edit) + notice("保存立即用于新片段。已有片段需应用默认样式并重新生成成片；已批准成片受保护。");
   document.getElementById("main").innerHTML =
     pageHead(
-      "设置与服务状态",
-      "",
+      "设置",
+      "分区调整 · 统一保存",
       `<button class="icon-button" id="runtime-refresh" aria-label="刷新">${icon("refresh")}</button>`,
     ) +
-    tabsHTML(settingsTabs, view.tab, "data-settings-tab") +
-    `<div class="settings-body">${body}${view.tab !== "services" ? `<details class="card card-pad diagnostics"><summary>ASR 本地依赖与路径诊断</summary><p>设备可见和模型缓存不等于推理成功；完整模型探测在 Worker 领取任务前执行。</p><pre>${htmlEscape(JSON.stringify({ asr: c.asr, diagnostics: c.diagnostics }, null, 2))}</pre></details>` : ""}<p id="runtime-message" role="status"></p><footer class="page-foot">本机部署 · 后台独立运行</footer></div>`;
+    '<div class="settings-layout">' + tabsHTML(settingsTabs, view.tab, "data-settings-tab") +
+    `<div class="settings-body">${body}<p id="runtime-message" role="status"></p><footer class="page-foot">本机部署 · 后台独立运行</footer></div></div><div id="settings-save-bar" class="settings-save-bar" hidden><span id="settings-dirty-count" role="status"></span><button id="settings-discard" class="btn btn-secondary">放弃修改</button><button id="settings-save-all" class="btn btn-primary">保存更改</button></div>`;
   restorePageScroll("settings");
   bindSubtitleSettings();
   const analysisForm = document.getElementById("analysis-automation-form");
-  if (analysisForm) analysisForm.onsubmit = async (event) => {
-    event.preventDefault();
-    const checkbox = document.getElementById("analysis-auto-start");
-    const save = document.getElementById("analysis-automation-save");
-    checkbox.disabled = save.disabled = true;
-    try {
-      const result = await reviewAPI("/api/config/analysis-automation", {auto_start: checkbox.checked});
-      view.config.settings.analysis.auto_start = result.auto_start;
-      if (analysisForm.isConnected) setMessage("analysis-automation-message", result.auto_start
-        ? "已保存：新完成的录播将自动 AI 切片，发布仍需人工确认。"
-        : `已保存：自动切片已关闭，请手动选择录播分析。${result.cancelled_pending ? `已取消 ${result.cancelled_pending} 个等待中的自动分析。` : ""}`);
-    } catch (error) {
-      if (analysisForm.isConnected) setMessage("analysis-automation-message", `保存失败：${error.message}`);
-    } finally {
-      checkbox.disabled = save.disabled = false;
-    }
-  };
+  if (analysisForm) {
+    document.getElementById("analysis-auto-start").onchange = event => {
+      view.automationDraft = event.target.checked === view.config.settings.analysis.auto_start ? null : event.target.checked;
+      updateSettingsSaveBar();
+    };
+    analysisForm.onsubmit = event => { event.preventDefault(); saveSettingsChanges(); };
+  }
+  document.getElementById("settings-discard").onclick = () => { view.subtitleDraft = view.automationDraft = null; drawSettings(); };
+  document.getElementById("settings-save-all").onclick = saveSettingsChanges;
+  updateSettingsSaveBar();
   document.getElementById("runtime-refresh").onclick = renderRuntimeSettings;
   document.querySelectorAll("[data-settings-tab],[data-settings-jump]").forEach(
     (b) =>

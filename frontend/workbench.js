@@ -6,12 +6,13 @@ const review = {
   segment: null,
   offset: 0,
   evidenceOffset: 0,
-  tab: "subtitles",
+  tab: "content",
   media: "source",
   unsaved: false,
   styleUnsaved: false,
   metadataUnsaved: false,
   largePlayer: false,
+  pickerCollapsed: false,
 };
 const recordingPicker = { query: "", up: "", from: "", to: "", group: "date", sort: "newest", offset: 0 };
 function recordingMeta(recording) {
@@ -104,7 +105,7 @@ function drawRecordingResults() {
   document.getElementById("recording-next").disabled = recordingPicker.offset+20 >= items.length;
   host.querySelectorAll("[data-recording]").forEach(button => button.onclick = () => {
     if (button.dataset.recording === review.task?.task_id) {
-      document.getElementById("source-dialog").close();
+      document.getElementById("source-dialog")?.close();
       return;
     }
     location.hash = pageLink("library", { source_task_id: button.dataset.recording });
@@ -299,6 +300,7 @@ async function renderManualWorkbench() {
     let selected = review.task;
     const signature = params.toString(),
       newLink = review.linkSignature !== signature;
+    if (newLink && ["content", "subtitles", "final"].includes(params.get("mode"))) review.tab = params.get("mode");
     const all = await readAllPages("/api/recordings", current);
     if (!current()) return;
     const ordered = sortedRecordings(all.map(recordingMeta), "newest");
@@ -353,6 +355,14 @@ async function renderManualWorkbench() {
       segment,
       linkSignature: signature,
     });
+    if (selected) {
+      params.set("source_task_id", selected.task_id);
+      if (segment) params.set("segment_id", segment.segment_id);
+      else params.delete("segment_id");
+      params.set("mode", review.tab);
+      history.replaceState(null, "", `#/library?${params}`);
+      review.linkSignature = params.toString();
+    }
     drawManualWorkbench();
   } catch (e) {
     if (current()) pageError("录播库", e, renderManualWorkbench);
@@ -361,6 +371,15 @@ async function renderManualWorkbench() {
 function updateReviewActions() {
   const s = review.segment;
   if (!s) {
+    const keep = document.getElementById("review-keep");
+    if (keep) { keep.disabled = true; keep.closest(".context-decisions").hidden = true; }
+    const next = document.getElementById("review-next-step");
+    if (next) { next.disabled = true; next.hidden = true; }
+    const evidence = review.evidence;
+    setMessage("context-state", review.analysisJob ? `分析${reviewJobStates[review.analysisJob.status] || review.analysisJob.status}` : evidence?.history_available ? `分析记录：${evidence.status}` : "尚无分析记录");
+    setMessage("context-save", evidence?.error || evidence?.skip_reason || "可手动分析本场录播，或补选源范围创建人工片段。");
+    const supplement = document.querySelector(".context-range .btn");
+    if (supplement) supplement.className = "btn btn-primary";
     const badge = document.getElementById("review-draft-badge");
     if (badge) {
       badge.textContent = "未选择片段";
@@ -380,13 +399,18 @@ function updateReviewActions() {
     finalize.className = `btn ${!dirty && !locked && subtitleReady && !s.final_valid ? "btn-primary" : "btn-secondary"}`;
   }
   if (approve) approve.disabled = !!(dirty || locked || !s.final_valid);
+  const keep = document.getElementById("review-keep");
+  if (keep) keep.disabled = !!(dirty || locked || s.human_reviewed);
   const save = document.getElementById("review-save");
+  const metadataSave = document.getElementById("review-metadata-save");
+  if (metadataSave) metadataSave.className = `btn ${review.metadataUnsaved ? "btn-primary" : "btn-secondary"}`;
   if (save) save.disabled = !!(locked || !document.querySelector("#review-lines tr"));
   const transcribe = document.getElementById("review-transcribe");
   if (transcribe) {
     transcribe.disabled = !!(dirty || locked);
     transcribe.textContent = s.active_job?.action === "transcribe_subtitles"
       ? "正在识别字幕…" : "本地模型识别字幕";
+    transcribe.className = `btn btn-sm ${!subtitleReady && !document.querySelector("#review-lines tr") ? "btn-primary" : "btn-secondary"}`;
   }
   document.querySelectorAll(
     '#review-lines input, #review-lines textarea, #review-lines [data-delete-line], #review-style, #review-style-save, #review-style-default, #review-drop, #review-drop-open, #review-rejudge, #review-range, #review-add-line, #review-meta-title, #review-meta-description, #review-meta-tags, #review-metadata-save',
@@ -414,6 +438,110 @@ function updateReviewActions() {
   );
   for (const button of [finalize, approve])
     if (button) button.setAttribute("aria-describedby", "review-save-hint");
+  setMessage("context-state", reviewStates[s.state] || s.state);
+  setMessage("context-version", `版本 ${s.revision} · ${timecode(s.source_end - s.source_start, true)}`);
+  setMessage("context-save", dirty ? "草稿未保存" : subtitleReady ? "字幕已保存" : "字幕待补充 / 确认");
+  const next = document.getElementById("review-next-step");
+  if (next) {
+    const target = review.tab === "content" ? "subtitles" : review.tab === "subtitles" ? "final" : "subtitles";
+    next.textContent = target === "subtitles" ? "检查字幕" : "进入成片确认";
+    next.onclick = () => document.querySelector(`[data-review-tab="${target}"]`)?.click();
+  }
+  if (approve) {
+    approve.textContent = "批准并发布";
+    approve.className = `btn ${!dirty && !locked && s.final_valid ? "btn-primary" : "btn-secondary"}`;
+  }
+  if (save) save.className = `btn ${review.tab === "subtitles" && !locked ? "btn-primary" : "btn-secondary"}`;
+}
+
+function candidateNeedsReview(s) {
+  return !s.human_reviewed && !s.publish_approval && s.state !== "dropped";
+}
+
+/* Move existing controls into the shared-player layout without duplicating editors. */
+function arrangeReviewWorkbench() {
+  const main = document.getElementById("main");
+  const layout = document.createElement("div");
+  layout.className = `library-layout ${review.pickerCollapsed ? "picker-collapsed" : ""}`;
+  const rail = document.createElement("aside");
+  rail.className = "recording-rail";
+  rail.setAttribute("aria-label", "录播选择");
+  rail.innerHTML = '<div class="rail-heading"><h2>场次</h2><button class="icon-button" id="recording-collapse" aria-label="收起场次列表">' + icon("chevron-left") + '</button></div>';
+  const filterButton = document.createElement("button");
+  filterButton.className = "text-button recording-filter-toggle";
+  filterButton.textContent = "筛选与排序";
+  filterButton.setAttribute("aria-expanded", "false");
+  filterButton.onclick = () => { const open = rail.classList.toggle("filters-open"); filterButton.setAttribute("aria-expanded", String(open)); };
+  rail.append(filterButton);
+  const picker = document.getElementById("source-dialog");
+  const pickerParts = [".recording-filters", ".recording-filters + .hint", "#recording-results", ".recording-pagination"].map(selector => picker?.querySelector(selector));
+  for (const element of pickerParts) {
+    if (element) rail.append(element);
+  }
+  const workspace = document.createElement("div");
+  workspace.className = "recording-workspace";
+  const dialogs = [...main.querySelectorAll("dialog")];
+  [...main.children].filter(node => !dialogs.includes(node)).forEach(node => workspace.append(node));
+  layout.append(rail, workspace);
+  main.prepend(layout);
+  document.getElementById("recording-collapse").onclick = () => {
+    review.pickerCollapsed = true;
+    layout.classList.add("picker-collapsed");
+  };
+  const manage = workspace.querySelector('.head-actions [data-dialog="source-dialog"]');
+  if (manage) {
+    manage.removeAttribute("data-dialog");
+    manage.className = "btn btn-secondary btn-sm";
+    manage.textContent = "场次列表";
+    manage.onclick = () => { review.pickerCollapsed = !review.pickerCollapsed; layout.classList.toggle("picker-collapsed", review.pickerCollapsed); };
+  }
+  if (!review.task) return;
+  const grid = workspace.querySelector(".workbench-grid");
+  const editor = workspace.querySelector(".editor-column");
+  const candidates = workspace.querySelector(".candidate-panel");
+  const footer = candidates.querySelector(".workbench-actions");
+  const job = document.getElementById("review-job");
+  const content = document.getElementById("content-panel");
+  const metadata = content.querySelector(".metadata-form");
+  const finalPanel = document.createElement("div");
+  finalPanel.id = "final-panel";
+  finalPanel.hidden = review.tab !== "final";
+  finalPanel.innerHTML = '<h3>成片确认</h3><p class="muted">在上方切换到当前成片预览，核对投稿资料后批准并发布。</p>';
+  if (metadata) finalPanel.append(metadata);
+  finalPanel.append(footer);
+  footer.querySelector(".hint")?.remove();
+  const drop = finalPanel.querySelector("#review-drop-open");
+  editor.querySelector(".editor-body").append(finalPanel);
+  workspace.append(editor, job);
+  content.prepend(candidates);
+  candidates.querySelector("h3").textContent = `片段候选 · ${review.segments.length} 个 · ${review.segments.filter(candidateNeedsReview).length} 个待审核`;
+  content.querySelectorAll(".definition-list dt").forEach(dt => {
+    if (["质量", "完整度", "置信度"].includes(dt.textContent)) { dt.nextElementSibling.remove(); dt.remove(); }
+  });
+  const context = document.createElement("aside");
+  context.className = "review-context";
+  context.innerHTML = `<h2>${htmlEscape(review.segment?.title || "当前录播")}</h2><p id="context-state" class="muted"></p><p id="context-version" class="num muted"></p><div class="context-range"></div><p class="context-reason">${htmlEscape(review.segment?.quality_reason || review.segment?.note || "请选择候选，结合视频作出人工判断。")}</p><div class="context-decisions"><button id="review-keep" class="btn btn-primary">保留并继续</button></div><p id="context-save" class="muted" role="status"></p><p>播放位置 <span id="context-position" class="num">00:00:00</span></p><button id="review-next-step" class="btn btn-secondary">检查字幕</button>`;
+  const range = grid.querySelector(".range-controls");
+  context.querySelector(".context-range").append(range);
+  if (drop) context.querySelector(".context-decisions").append(drop);
+  grid.append(context);
+  const tabs = editor.querySelector(".tabs");
+  tabs.outerHTML = tabsHTML([["content", "候选"], ["subtitles", "字幕"], ["final", "成片"]], review.tab, "data-review-tab");
+  const evidenceButton = document.getElementById("show-evidence");
+  grid.querySelector(".density-empty").remove();
+  content.append(evidenceButton);
+  const finalActions = document.createElement("div");
+  finalActions.className = "context-final-actions";
+  finalActions.append(footer);
+  context.append(finalActions);
+  editor.querySelector(".section-heading > .hint")?.remove();
+  const details = content.querySelectorAll("details");
+  const style = [...details].find(node => node.querySelector("#review-style"));
+  if (style) document.getElementById("subtitle-panel").append(style);
+  if (review.segment) {
+    setMessage("review-save-hint", "");
+    setMessage("candidate-progress", "");
+  }
 }
 function reviewEvidenceHTML() {
   const e = review.evidence;
@@ -528,6 +656,7 @@ function drawManualWorkbench() {
   review.styleUnsaved = false;
   review.metadataUnsaved = false;
   main.innerHTML = reviewMarkup(s, task, lines, initial);
+  arrangeReviewWorkbench();
   if (!s) updateReviewActions();
   restorePageScroll("library");
   bindDialogs();
@@ -541,13 +670,22 @@ function drawManualWorkbench() {
   };
   const switchTab = (tab) => {
     review.tab = tab;
+    const params = pageParams();
+    params.set("mode", tab);
+    history.replaceState(null, "", `#/library?${params}`);
+    review.linkSignature = params.toString();
     document.getElementById("subtitle-panel").hidden = tab !== "subtitles";
     document.getElementById("content-panel").hidden = tab !== "content";
+    document.getElementById("final-panel").hidden = tab !== "final";
+    document.querySelector(".recording-workspace").dataset.mode = tab;
     document.querySelectorAll("[data-review-tab]").forEach((b) => {
       b.classList.toggle("active", b.dataset.reviewTab === tab);
       b.setAttribute("aria-selected", b.dataset.reviewTab === tab);
       b.tabIndex = b.dataset.reviewTab === tab ? 0 : -1;
     });
+    if (tab === "final") document.querySelector('[data-media-tab="final"]')?.click();
+    else document.querySelector('[data-media-tab="source"]')?.click();
+    updateReviewActions();
   };
   document
     .querySelectorAll("[data-review-tab]")
@@ -764,11 +902,30 @@ function drawManualWorkbench() {
   document.querySelectorAll("button.candidate-card[data-segment]").forEach(
     (b) =>
       (b.onclick = () => {
+        capturePlayback();
         review.segment = { segment_id: b.dataset.segment };
         renderManualWorkbench();
       }),
   );
   if (!s) return;
+  const advanceCandidate = async () => {
+    const refreshed = await mutateReview(`/api/recordings/${task.task_id}/segments`);
+    const ordered = refreshed.items.sort((a, b) => a.source_start - b.source_start);
+    const index = ordered.findIndex(x => x.segment_id === s.segment_id);
+    const next = [...ordered.slice(index + 1), ...ordered.slice(0, index)].find(candidateNeedsReview);
+    review.segment = next || ordered.find(x => x.state !== "dropped") || null;
+    review.tab = next ? "content" : "subtitles";
+    review.media = "source";
+    await renderManualWorkbench();
+    reviewMessage(next ? "决定已保存，已选择下一个未审核候选。" : "候选已处理完成，可以检查保留片段的字幕。");
+  };
+  document.getElementById("review-keep").onclick = async event => {
+    event.currentTarget.disabled = true;
+    try {
+      await mutateReview(`/api/segments/${s.segment_id}/keep`, {expected_revision: s.revision});
+      await advanceCandidate();
+    } catch (error) { if (stillHere()) { updateReviewActions(); reviewMessage(`保留未保存：${error.message}`); } }
+  };
   const metadataKey = metadataDraftKey();
   const metadataControls = ["title", "description", "tags"].map(key => document.getElementById(`review-meta-${key}`));
   let metadataRevision = s.revision;
@@ -911,8 +1068,7 @@ function drawManualWorkbench() {
         reason: document.getElementById("review-drop-reason").value.trim() || "人工判断无需切片",
       });
       for (const key of [subtitleKey, styleKey, metadataDraftKey()]) localStorage.removeItem(key);
-      await renderManualWorkbench();
-      reviewMessage("已废弃当前片段，源录播保留。");
+      await advanceCandidate();
     } catch (e) {
       if (!stillHere()) return;
       document.getElementById("drop-dialog").close();
@@ -928,7 +1084,7 @@ function drawManualWorkbench() {
       remove.closest("tr").remove();
       writeReviewDraft();
     }
-    if (e.target.closest("[data-subtitle-seek]")) {
+    if (e.target.closest("[data-subtitle-seek]") || (e.target.closest("tr") && !e.target.closest("input,textarea,button"))) {
       try {
         const relative = parseTimecode(
           e.target.closest("tr").querySelector("[data-start]").value,
@@ -945,6 +1101,17 @@ function drawManualWorkbench() {
       }
     }
   };
+  const highlightSubtitle = video => {
+    setMessage("context-position", timecode(video.currentTime));
+    const relative = video.currentTime - (video === source ? s.source_start : 0);
+    tbody.querySelectorAll("tr").forEach(row => {
+      try {
+        row.classList.toggle("playing", relative >= parseTimecode(row.querySelector("[data-start]").value) && relative < parseTimecode(row.querySelector("[data-end]").value));
+      } catch { row.classList.remove("playing"); }
+    });
+  };
+  source.ontimeupdate = () => highlightSubtitle(source);
+  if (final) final.ontimeupdate = () => highlightSubtitle(final);
   document.getElementById("review-add-line").onclick = () => {
     tbody.insertAdjacentHTML(
       "beforeend",
@@ -1011,6 +1178,7 @@ function drawManualWorkbench() {
     document.getElementById("review-rejudge").onclick = () =>
       submit("retry_judge");
   updateReviewActions();
+  switchTab(review.tab);
   if (transcript) {
     writeReviewDraft();
     reviewMessage("本地识别完成，字幕已填入草稿。请试听核对后保存字幕。");
@@ -1058,13 +1226,26 @@ async function watchReviewJob(id) {
       );
   }
 }
-const streamerView = { room: "", offset: 0 };
+const streamerView = { room: "", offset: 0, recordings: [] };
 async function renderStreamerProfiles() {
   clearTimeout(reviewTimer);
-  beginPage("streamer");
+  const current = beginPage("streamer");
   if (pageParams().get("room")) streamerView.room = pageParams().get("room");
   const main = document.getElementById("main");
-  main.innerHTML = `<h1>主播档案与经验</h1><div class="card" style="padding:16px"><label>房间号 <input id="profile-room" type="number" min="1" value="${htmlEscape(streamerView.room)}"></label><button id="profile-load" class="btn btn-secondary">读取档案</button></div><div id="profile-content"></div>`;
+  main.innerHTML = pageHead("主播档案", "发布默认值与最近录播") + emptyState("正在读取主播…");
+  const [rooms, recordings] = await Promise.all([
+    reviewAPI("/api/rooms?page=1&size=100").catch(() => ({items: []})),
+    readAllPages("/api/recordings", current).catch(() => []),
+  ]);
+  if (!current()) return;
+  streamerView.recordings = sortedRecordings((recordings || []).map(recordingMeta), "newest");
+  const profiles = new Map(streamerView.recordings.filter(r => r.room).map(r => [r.room, r.upName]));
+  rooms.items.forEach(r => profiles.set(String(roomId(r)), roomName(r)));
+  if (!streamerView.room) streamerView.room = profiles.keys().next().value || "";
+  main.innerHTML = pageHead("主播档案", "发布默认值与最近录播") + `<div class="profile-layout"><aside class="profile-list">${[...profiles].map(([room, name]) => `<button class="recording-option ${room === streamerView.room ? "selected" : ""}" data-profile-room="${htmlEscape(room)}"><strong>${htmlEscape(name)}</strong><small class="muted"> · ${htmlEscape(room)}</small></button>`).join("") || '<p class="muted">暂无主播，可输入房间号读取。</p>'}<label class="field">房间号<input id="profile-room" type="number" min="1" value="${htmlEscape(streamerView.room)}"></label><button id="profile-load" class="btn btn-secondary btn-sm">读取档案</button></aside><div id="profile-content"></div></div>`;
+  main.querySelectorAll("[data-profile-room]").forEach(button => button.onclick = () => {
+    location.hash = pageLink("streamer", {room: button.dataset.profileRoom});
+  });
   document.getElementById("profile-load").onclick = () => {
     streamerView.room = document.getElementById("profile-room").value;
     streamerView.offset = 0;
@@ -1087,7 +1268,8 @@ async function loadStreamerProfile() {
     if (pageKey() !== "streamer" || room !== streamerView.room) return;
     if (!content.isConnected) return;
     const p = data.profile;
-    content.innerHTML = `<p id="profile-message" role="status"></p><div class="split review-split"><form id="profile-form" class="card" style="padding:16px"><h2>房间 ${htmlEscape(room)}</h2><p>保存后用于新分析和新建片段；已有成片保留自己的样式和版本。</p>
+    const recent = streamerView.recordings.filter(r => r.room === room).slice(0, 5);
+    content.innerHTML = `<p id="profile-message" role="status"></p><section class="recent-recordings"><h2>${htmlEscape(p.display_name || `房间 ${room}`)} · 最近录播</h2>${recent.map(r => `<a href="${pageLink("library", {source_task_id: r.task_id})}">${htmlEscape(r.date ? `${r.date} ${r.time}` : r.name)} · 打开工作台</a>`).join("") || '<p class="muted">暂无本地录播</p>'}</section><div class="split review-split"><form id="profile-form" class="card" style="padding:16px"><h2>主播信息与发布默认值</h2><p>用于新片段；单条成片修改不覆盖本档案。</p>
       ${[
         ["display_name", "显示名"],
         ["aliases", "别名（逗号分隔）"],
@@ -1120,6 +1302,15 @@ async function loadStreamerProfile() {
       <div class="card" style="padding:16px"><h2>建议与证据</h2><p>${htmlEscape(data.evidence.message)}</p><p>有效 ${data.evidence.sample_size} · 正 ${data.evidence.positive_count} · 负 ${data.evidence.negative_count}</p><button id="profile-generate" class="btn btn-secondary">根据已有人工样本生成建议</button>
       ${data.recommendations.map((r) => `<article><p>${htmlEscape(r.changes?.approved_guidance)}</p><p>状态 ${htmlEscape(r.status)} · 样本 ${r.sample_size}</p><details><summary>查看证据 ID</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(r.evidence_ids, null, 2))}</pre></details><button class="btn btn-secondary" data-apply="${htmlEscape(r.recommendation_id)}" ${r.status === "applied" ? "disabled" : ""}>人工应用建议</button></article>`).join("") || "<p>暂无建议。</p>"}
       <h2>审核经验（共 ${experience.total} 条）</h2>${experience.items.map((e) => `<article><p>${htmlEscape(e.experience_type)} · ${htmlEscape(e.source_rel_path)}</p><p>${htmlEscape(e.note)}</p><details><summary>查看源区间和内容证据</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(e, null, 2))}</pre></details></article>`).join("") || "<p>暂无已保存的人工审核经验。</p>"}<div class="action-row"><button id="experience-prev" class="btn btn-secondary" ${streamerView.offset === 0 ? "disabled" : ""}>上一页</button><button id="experience-next" class="btn btn-secondary" ${streamerView.offset + 20 >= experience.total ? "disabled" : ""}>下一页</button></div></div></div>`;
+    const profileForm = document.getElementById("profile-form");
+    const advanced = document.createElement("details");
+    advanced.innerHTML = '<summary>高级覆盖与人工指导</summary>';
+    for (const key of ["approved_guidance", "default_slice_options", "default_subtitle_style"]) {
+      advanced.append(profileForm.querySelector(`[data-profile="${key}"]`).closest("p"));
+    }
+    const parameterHelp = [...profileForm.querySelectorAll("p")].find(p => p.textContent.startsWith("密度键："));
+    if (parameterHelp) advanced.append(parameterHelp);
+    profileForm.insertBefore(advanced, profileForm.querySelector('button[type="submit"]'));
     const action = async (callback) => {
       try {
         await callback();

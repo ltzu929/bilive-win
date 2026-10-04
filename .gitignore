@@ -38,3 +38,5 @@ Thumbs.db
 build/
 .coverage
 htmlcov/
+.playwright-cli/
+output/playwright/

@@ -208,6 +208,15 @@ class StyleRequest(BaseModel):
     style: dict[str, Any]
 
 
+class KeepRequest(BaseModel):
+    expected_revision: int
+
+
+@app.post('/api/segments/{segment_id}/keep')
+def keep_segment(segment_id: str, request: KeepRequest):
+    return workbench.keep(segment_id, request.expected_revision)
+
+
 class MetadataRequest(BaseModel):
     expected_revision: int
     title: str

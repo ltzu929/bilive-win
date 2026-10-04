@@ -120,7 +120,8 @@ function bindTabKeyboard(root) {
       content: "content-panel", subtitles: "subtitle-panel",
     };
     tabs.forEach((tab) => {
-      const panel = root.querySelector(`#${panels[tab.dataset.mediaTab || tab.dataset.reviewTab]}`);
+      const id = tab.dataset.reviewTab === "final" ? "final-panel" : panels[tab.dataset.mediaTab || tab.dataset.reviewTab];
+      const panel = root.querySelector(`#${id}`);
       if (!panel) return;
       tab.id = `${panel.id}-tab`;
       tab.setAttribute("aria-controls", panel.id);

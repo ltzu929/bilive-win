@@ -105,6 +105,47 @@ def finalize(client, worker, s):
     return client.get(f"/api/segments/{s['segment_id']}").json()
 
 
+def test_keep_confirms_decision_without_invalidating_subtitles_or_final(env):
+    c, worker, wb, uploads = env
+    s = finalize(c, worker, subtitles(c, create(c)))
+    stored = wb.load(s['segment_id'])
+    stored.update(decision='review', state='needs_review')
+    wb.save(stored)
+    before = Path(s['final_path']).read_bytes()
+    response = c.post(f"/api/segments/{s['segment_id']}/keep", json={'expected_revision': s['revision']})
+    assert response.status_code == 200, response.text
+    kept = response.json()
+    assert kept['human_reviewed'] and kept['decision'] == 'manual_keep'
+    assert kept['revision'] == s['revision'] and kept['subtitles'] == s['subtitles']
+    assert kept['final_valid'] and Path(kept['final_path']).read_bytes() == before
+    assert uploads.get_by_path(kept['final_path'])['stage'] == 'staged'
+    assert not kept['publish_approval']
+
+
+@pytest.mark.parametrize('blocked', ['stale', 'dropped', 'approved', 'active', 'source_active'])
+def test_keep_respects_existing_edit_boundaries(env, blocked):
+    c, worker, wb, uploads = env
+    s = create(c)
+    expected = s['revision']
+    if blocked == 'stale':
+        expected -= 1
+    elif blocked == 'dropped':
+        wb.drop(s['segment_id'], expected, '不要此片段')
+        expected += 1
+    elif blocked == 'approved':
+        s['publish_approval'] = True
+        wb.save(s)
+    elif blocked == 'active':
+        wb.submit('transcribe_subtitles', s['segment_id'], expected)
+    else:
+        jobs = wb.jobs
+        jobs.submit('start_analysis', task_id_from_source_relpath('session.mp4'), {})
+    before = wb.load(s['segment_id'])
+    response = c.post(f"/api/segments/{s['segment_id']}/keep", json={'expected_revision': expected})
+    assert response.status_code == 409, response.text
+    assert wb.load(s['segment_id']) == before
+
+
 def test_local_transcription_returns_relative_draft_and_preserves_saved_media(env):
     from bilive.analysis.pipeline import AnalysisPipeline
     c, w, wb, q = env

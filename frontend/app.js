@@ -14,6 +14,13 @@ function route() {
     return;
   }
   const page = PAGES[pageKey()] ? pageKey() : "library";
+  if (page !== "settings" && document.getElementById("main").classList.contains("page-settings") && settingsDirtyCount()) {
+    if (settingsView.saving || !confirm("设置有未保存修改。放弃修改并离开？")) {
+      location.hash = "#/settings";
+      return;
+    }
+    settingsView.subtitleDraft = settingsView.automationDraft = null;
+  }
   if (page !== pageKey()) {
     location.hash = "#/library";
     return;
@@ -51,5 +58,8 @@ try { sidebarCollapsed = localStorage.getItem("bilive:sidebar-collapsed") === "t
 setSidebarCollapsed(sidebarCollapsed);
 document.getElementById("sidebar-toggle").onclick = () => setSidebarCollapsed(!document.querySelector(".app").classList.contains("sidebar-collapsed"));
 window.addEventListener("hashchange", route);
+window.addEventListener("beforeunload", event => {
+  if (settingsDirtyCount()) { event.preventDefault(); event.returnValue = ""; }
+});
 route();
 updateServiceIndicator();
