@@ -131,6 +131,7 @@ def test_completed_recording_through_manual_review_publish_and_source_recycle(se
     calls=[]
     client=SimpleNamespace(check_login=lambda:{'isLogin':True},
         upload_file=lambda *args:calls.append('upload') or 'confirmed-isolated-remote',
+        upload_cover=lambda path:'https://example.test/isolated-cover.jpg',
         submit_uploaded_video=lambda *args:calls.append('publish') or {'code':0,'data':{'bvid':'BVisolated'}})
     settings.upload.delete_after_success=False
     consumer=UploadConsumer(q,settings.upload,client,wb.artifacts/'upload.lock')
@@ -144,7 +145,8 @@ def test_completed_recording_through_manual_review_publish_and_source_recycle(se
     final=Path(wb.load(s['segment_id'])['final_path'])
     task=task_id_from_source_relpath('123 - 隔离测试/session.mp4')
     review=lifecycle.finish(task,note='完整隔离链路人工确认')
-    assert review['review_saved'] and review['recycle_queued'] and worker.run_once()
+    assert review['review_saved'] and not review['recycle_queued']
+    assert lifecycle.queue(task)['queued'] and worker.run_once()
     assert not source.exists() and not source.with_suffix('.xml').exists()
     assert not Path(s['candidate_path']).exists() and final.is_file()
     assert wb.subtitles.load(s['segment_id'])['lines'] and lifecycle.load(task)['trash_status'] == 'done'
@@ -160,7 +162,8 @@ def test_completed_recording_through_manual_review_publish_and_source_recycle(se
     assert lifecycle.load(other_task)['review_state'] == 'unprocessed'
     wb.submit('approve_publish',other['segment_id'],other['revision']);assert worker.run_once()
     assert consumer.process_one()['status'] == 'published'
-    assert lifecycle.finish(other_task,note='第二房间独立终审')['recycle_queued'] and worker.run_once()
+    assert lifecycle.finish(other_task,note='第二房间独立终审')['review_saved']
+    assert lifecycle.queue(other_task)['queued'] and worker.run_once()
     assert not peer_source.exists() and Path(other['final_path']).is_file() and final.is_file()
     assert lifecycle.load(task)['trash_status'] == lifecycle.load(other_task)['trash_status'] == 'done'
     assert calls == ['upload','publish','upload','publish']

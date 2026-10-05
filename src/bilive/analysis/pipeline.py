@@ -298,8 +298,8 @@ class AnalysisPipeline:
                  duplicate_of=getattr(result,'duplicate_of',None),duplicate_reason=getattr(result,'duplicate_reason',None))
         from bilive.lifecycle.profiles import profile_for_source
         profile = profile_for_source(self.workbench.videos, rel)
-        s['description'] = result.description or profile.get('default_description', '')
-        s['tags'] = list(dict.fromkeys([*result.tags, *profile.get('default_tags', [])]))
+        from bilive.media.publication import defaults_for_segment
+        s.update(defaults_for_segment(self.workbench, rel, result.title, result.description, result.tags, self.settings))
         default_style = (self.workbench.current_default_style() if self.workbench.default_style_provider
                          else self.settings.subtitle_style())
         s['subtitle_style'] = {**default_style,**profile.get('default_subtitle_style', {})}
@@ -365,7 +365,10 @@ class AnalysisPipeline:
                 final = self.finalizer.finalize(sid,rel,start,end,1)
             s.update(generated_path=final.final_path, processing_stage='stage')
             with timed_stage(s,'stage'):
-                self.workbench.uploads.stage(final.final_path,result.title,s['description'],s['tags'])
+                from bilive.media.publication import generate_default_cover
+                s['cover_path'] = str(generate_default_cover(Path(final.final_path)))
+                self.workbench.uploads.stage(final.final_path,s['title'],s['description'],s['tags'],
+                                           tid=s['tid'],cover_path=s['cover_path'])
             s.update(state="awaiting_publish",final_path=final.final_path,final_revision=1,processing_stage='completed')
         except Exception as exc:
             s.update(state="needs_review", processing_error=type(exc).__name__)

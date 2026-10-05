@@ -19,7 +19,7 @@ def test_eagle_snapshot_reads_only_and_removes_absent_source(tmp_path):
     before={str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     rows=source_index(wb)
     assert len(rows) == 1 and rows[0]['source_task_id'] == task_id_from_source_relpath('123 - 甲/'+source.name)
-    assert rows[0]['recorded_at'] == '2026-09-29 18:00:00'
+    assert rows[0]['recorded_at'] == '2026-09-29 10:00:00'
     assert rows[0]['workspace_url'].startswith('/workbench/?source_task_id=')
     assert rows[0]['source_size_mb'] > 0 and rows[0]['thumbnail_url'] == ''
     assert before == {str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}

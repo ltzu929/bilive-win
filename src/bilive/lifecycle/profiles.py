@@ -11,6 +11,9 @@ def room_from_source(rel: str) -> str | None:
         match = re.match(r'^(\d+)(?:\s*-|_|$)', text)
         if match:
             return match[1]
+    match = re.match(r'blive_(\d+)_', path.name)
+    if match:
+        return match[1]
     return None
 
 

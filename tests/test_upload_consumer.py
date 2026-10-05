@@ -67,6 +67,22 @@ def test_configured_category_reaches_upload_and_publication(setup):
     assert len(metadata) == 2 and all(v['tid'] == 19 for v in metadata)
 
 
+def test_segment_category_cover_and_retry_are_preserved(setup):
+    q,p,c,n,worker = setup
+    cover = p.with_suffix('.jpg')
+    cover.write_bytes(b'isolated cover')
+    q.stage(str(p), title='title', tid=17, cover_path=str(cover))
+    covers = []
+    c.upload_cover = lambda path:covers.append(path) or 'https://example.test/cover.jpg'
+    metadata = []
+    c.submit_uploaded_video = lambda remote,data: metadata.append(dict(data)) or {'code':-1,'message':'isolated failure'}
+    q.activate(str(p))
+    assert worker.process_one()['status'] == 'uploaded'
+    assert worker.process_one()['status'] == 'uploaded'
+    assert covers == [str(cover)] and n['upload'] == 1
+    assert all(v['tid'] == 17 and v['cover'] == 'https://example.test/cover.jpg' for v in metadata)
+
+
 def test_authentication_checked_before_claim(setup):
     q,p,c,n,worker = setup
     q.activate(str(p))

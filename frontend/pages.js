@@ -405,13 +405,13 @@ function drawRecycle() {
   const view = recycleView,
     now = Date.now() / 1000;
   const items = view.items.filter((r) =>
-    view.tab === "history"
+    view.tab === 'retained' ? r.manual_keep : view.tab === 'all' ? r.trash_status !== 'done' : view.tab === "history"
       ? !!r.trash_status
       : r.trash_status !== "done" &&
         (view.tab === "expired"
           ? r.deadline != null && now >= r.deadline
           : r.retention_started_at != null &&
-            now >= r.retention_started_at + 5 * 86400 &&
+            now >= r.deadline - 86400 && !r.manual_keep &&
             now < r.deadline),
   );
   view.offset = Math.min(
@@ -427,12 +427,14 @@ function drawRecycle() {
       "源录播按期限处理，成片单独保护。",
       `<span class="muted">当前时间 ${beijingTime(now)}（北京时间）</span><button id="recycle-refresh" class="icon-button" aria-label="刷新">${icon("refresh")}</button>`,
     ) +
-    '<p class="retention-subtitle">第5天提醒 · 第7天到期回收 · 移入 Windows 回收站。</p>' +
+    '<p class="retention-subtitle">期限与自动清理开关在设置页调整；活跃任务和手动保留的录播受保护。</p>' +
     tabsHTML(
       [
         ["upcoming", "即将到期"],
         ["expired", "已到期"],
         ["history", "回收记录"],
+        ["retained", "手动保留"],
+        ["all", "全部源录播"],
       ],
       view.tab,
       "data-recycle-tab",
@@ -465,6 +467,16 @@ function drawRecycle() {
   );
   bindPager("recycle", view, items.length, drawRecycle);
   const b = document.getElementById("recycle-retry");
+  if (row && row.trash_status !== 'done') {
+    document.querySelector('.recycle-detail').insertAdjacentHTML('afterbegin', `<button id="recording-retain" class="btn btn-secondary">${row.manual_keep ? '取消手动保留' : '保留此录播'}</button><p class="hint">${row.manual_keep ? '本场录播跳过自动清理。' : row.cleanup_enabled ? '自动清理已开启。' : '自动清理已关闭。'}${row.cleanup_reason === 'published' ? '期限按最后一个保留片段发布成功时间计算。' : ''}</p>`);
+    document.getElementById('recording-retain').onclick = async event => {
+      event.target.disabled = true;
+      try {
+        await reviewAPI(`/api/recordings/${row.task_id}/retain`, {keep:!row.manual_keep});
+        await renderSourceRecycle();
+      } catch (error) { setMessage('recycle-message', `保留设置失败：${error.message}`); event.target.disabled = false; }
+    };
+  }
   if (b)
     b.onclick = async () => {
       b.disabled = true;
@@ -489,7 +501,7 @@ function drawRecycle() {
 function recycleDetail(r, now) {
   const item = (name, desc, ico = "file-text") =>
     `<div class="file-item">${icon(ico)}<div><strong>${name}</strong><p>${desc}</p></div></div>`;
-  return `<h2>${htmlEscape(sourceTitle(r.source_relpath))}</h2><p class="muted">到期时间：${beijingTime(r.deadline)}</p>${r.deadline != null && now >= r.deadline ? notice("已到期，按既定规则回收，不等待剩余复核。", "warning") : notice("源录播尚未到期，回收仍需满足整场审核规则。")}<section class="detail-section"><h3>回收状态</h3>${notice(`${htmlEscape(trashLabels[r.trash_status] || "尚未排队")}<p class="muted">${htmlEscape(r.trash_error || "后台按规则执行源包检查与移动。")}</p>`, ["failed", "blocked"].includes(r.trash_status) ? "warning" : "info")}<p class="muted">审核：${htmlEscape(r.review_result ? "已复核" : reviewLabels[r.review_state] || r.review_state)}</p></section><section class="detail-section"><h3>回收范围</h3><p>将回收的内容（源录播相关）</p><div class="file-group">${item("源视频 MP4 / FLV", "该场次原始录制视频及关联文件")}${item("弹幕 XML", "对应弹幕文件")}${item("关联候选与任务文件", "关联候选、原始裁剪和任务中间文件")}</div><p>保留的内容（不回收）</p><div class="file-group">${item("最终成片及投稿资料", "成片历史、独立字幕与投稿所需资料", "folder")}${item("独立审核记录", "该场次的审核结果与历史记录", "folder")}</div></section><details><summary>冻结清单及逐项结果</summary><pre>${htmlEscape(JSON.stringify({ files: r.frozen_manifest, results: r.trash_results }, null, 2))}</pre></details><p class="hint">${icon("info-circle")}移入回收站不代表磁盘空间已释放。</p><button id="recycle-retry" class="btn btn-secondary" ${["done", "processing", "pending"].includes(r.trash_status) ? "disabled" : ""}>重新排回收</button><p id="recycle-message" role="status"></p>`;
+  return `<h2>${htmlEscape(sourceTitle(r.source_relpath))}</h2><p class="muted">到期时间：${beijingTime(r.deadline)}</p>${r.deadline != null && now >= r.deadline ? notice("已到期；自动清理开启且未手动保留时，后台检查保护条件后回收。", "warning") : notice("源录播尚未到期，回收仍需满足整场审核规则。")}<section class="detail-section"><h3>回收状态</h3>${notice(`${htmlEscape(trashLabels[r.trash_status] || "尚未排队")}<p class="muted">${htmlEscape(r.trash_error || "后台按规则执行源包检查与移动。")}</p>`, ["failed", "blocked"].includes(r.trash_status) ? "warning" : "info")}<p class="muted">审核：${htmlEscape(r.review_result ? "已复核" : reviewLabels[r.review_state] || r.review_state)}</p></section><section class="detail-section"><h3>回收范围</h3><p>将回收的内容（源录播相关）</p><div class="file-group">${item("源视频 MP4 / FLV", "该场次原始录制视频及关联文件")}${item("弹幕 XML", "对应弹幕文件")}${item("关联候选与任务文件", "关联候选、原始裁剪和任务中间文件")}</div><p>保留的内容（不回收）</p><div class="file-group">${item("最终成片及投稿资料", "成片历史、独立字幕与投稿所需资料", "folder")}${item("独立审核记录", "该场次的审核结果与历史记录", "folder")}</div></section><details><summary>冻结清单及逐项结果</summary><pre>${htmlEscape(JSON.stringify({ files: r.frozen_manifest, results: r.trash_results }, null, 2))}</pre></details><p class="hint">${icon("info-circle")}移入回收站不代表磁盘空间已释放。</p><button id="recycle-retry" class="btn btn-secondary" ${["done", "processing", "pending"].includes(r.trash_status) ? "disabled" : ""}>重新排回收</button><p id="recycle-message" role="status"></p>`;
 }
 
 const settingsView = {
@@ -500,6 +512,7 @@ const settingsView = {
   index: null,
   subtitleDraft: null,
   automationDraft: null,
+  configDraft: {},
   saving: false,
 };
 const settingsTabs = [
@@ -575,7 +588,66 @@ const configNames = {
   db_path: "上传库路径",
   cookie_file: "凭据文件路径",
   config_path: "配置路径",
+  title_template: "默认标题模板",
+  description: "默认简介",
+  tags: "默认标签",
+  tid: "默认投稿分区",
+  enabled: "自动清理",
+  unprocessed_days: "未处理录播保留天数",
+  published_hours: "发布成功后源录播保留小时数",
+  min_source_size_mb: "跳过分析的最小源大小（MiB）",
+  max_base64_bytes: "模型视频编码大小上限（字节）",
+  media_resolution: "模型画面分辨率",
+  pre_judge_asr: "判断前先转写语音",
+  asr_prompt_max_chars: "模型转写上下文字符上限",
+  whisper_engine: "转写引擎",
+  whisper_vad_min_silence_ms: "VAD 最短静音（毫秒）",
+  whisper_vad_speech_pad_ms: "VAD 语音补边（毫秒）",
+  unload_audio_model_after_analysis: "分析后释放转写模型",
+  upload_line: "上传线路",
+  poll_interval: "上传检查间隔（秒）",
+  max_attempts: "上传最大尝试次数",
+  retry_base: "重试基础间隔（秒）",
+  auth_retry: "登录检查间隔（秒）",
+  delete_after_success: "发布成功后清理本地成片",
 };
+function editableConfigSection(title, section, excluded = []) {
+  const editor = settingsView.config.editor;
+  if (!editor) return configSection(title, settingsView.config.settings[section]);
+  const values = {...editor.values[section], ...settingsView.configDraft[section]};
+  const fields = Object.entries(editor.schema[section] || {}).filter(([key]) => !excluded.includes(key));
+  return `<section class="card card-pad"><h2>${title}</h2>${fields.map(([key, spec]) => {
+    const value = values[key], attrs = `data-config-section="${section}" data-config-key="${key}"`;
+    let input;
+    if (typeof spec.default === "boolean") input = `<input type="checkbox" ${attrs} ${value ? "checked" : ""}>`;
+    else if (spec.choices) input = `<select ${attrs}>${spec.choices.map(v => `<option ${v === value ? "selected" : ""}>${htmlEscape(v)}</option>`).join("")}</select>`;
+    else input = `<input ${attrs} type="${spec.bounds ? "number" : "text"}" ${spec.bounds ? `min="${spec.bounds[0]}" max="${spec.bounds[1]}" step="any"` : ""} value="${htmlEscape(Array.isArray(value) ? value.join("，") : value ?? "")}">`;
+    return `<label class="field">${htmlEscape(configNames[key] || key)}${input}<small class="hint">${spec.effect === "restart" ? "保存后重启相关服务生效" : "保存后用于新片段或下次清理检查"}</small></label>`;
+  }).join("")}<button class="btn btn-secondary btn-sm" data-config-reset="${section}">恢复本分区默认值</button></section>`;
+}
+function bindEditableSettings() {
+  const editor = settingsView.config.editor;
+  if (!editor) return;
+  document.querySelectorAll('[data-config-section]').forEach(input => input.oninput = () => {
+    const section = input.dataset.configSection, key = input.dataset.configKey;
+    const spec = editor.schema[section][key];
+    let value = typeof spec.default === 'boolean' ? input.checked : spec.bounds ? Number(input.value) : input.value;
+    if (section === 'publication' && key === 'tid' && !input.value) value = null;
+    if (Array.isArray(spec.default)) value = input.value.split(/[,，]/).map(t => t.trim()).filter(Boolean);
+    const draft = settingsView.configDraft[section] ||= {};
+    if (JSON.stringify(value) === JSON.stringify(editor.values[section][key])) delete draft[key];
+    else draft[key] = value;
+    updateSettingsSaveBar();
+  });
+  document.querySelectorAll('[data-config-reset]').forEach(button => button.onclick = () => {
+    const section = button.dataset.configReset;
+    settingsView.configDraft[section] = Object.fromEntries(Object.entries(editor.schema[section])
+      .filter(([key]) => !(section === 'analysis' && key === 'auto_start'))
+      .filter(([key, spec]) => JSON.stringify(spec.default) !== JSON.stringify(editor.values[section][key]))
+      .map(([key, spec]) => [key, spec.default]));
+    drawSettings();
+  });
+}
 function configSection(title, data) {
   return `<section class="card card-pad"><h2>${title}<span class="readonly">只读</span></h2>${definitionRows(Object.entries(data || {}).map(([key, value]) => [configNames[key] || key, typeof value === "object" ? JSON.stringify(value) : String(value)]))}</section>`;
 }
@@ -646,13 +718,13 @@ function settingsDirtyCount() {
   const original = subtitleStyleFromSettings(settingsView.config?.settings?.edit);
   const style = settingsView.subtitleDraft;
   return (style ? Object.keys(original).filter(key => original[key] !== style[key]).length : 0) +
-    (settingsView.automationDraft == null ? 0 : 1);
+    (settingsView.automationDraft == null ? 0 : 1) + Object.values(settingsView.configDraft).reduce((count, fields) => count + Object.keys(fields).length, 0);
 }
 function updateSettingsSaveBar() {
   const count = settingsDirtyCount(), bar = document.getElementById("settings-save-bar");
   if (!bar) return;
   bar.hidden = count === 0;
-  setMessage("settings-dirty-count", `${count} 项未保存修改 · 保存后立即用于新任务`);
+  setMessage("settings-dirty-count", `${count} 项未保存修改 · 参数生效方式见各设置项`);
   document.getElementById("settings-save-all").disabled = settingsView.saving;
   document.querySelectorAll("#subtitle-settings-save, #analysis-automation-save, #subtitle-settings-reset").forEach(button => button.hidden = true);
 }
@@ -664,21 +736,21 @@ async function saveSettingsChanges() {
   document.querySelectorAll('.settings-layout input, .settings-layout select, .settings-layout button, #settings-discard').forEach(control => control.disabled = true);
   updateSettingsSaveBar();
   try {
-    if (style) {
-      const result = await reviewAPI("/api/config/subtitle-style", {style});
-      view.config.settings.edit = {font_family: result.style.font_name, ...result.style};
-      view.subtitleDraft = null;
+    const changes = Object.fromEntries(Object.entries(view.configDraft).filter(([, fields]) => Object.keys(fields).length));
+    if (automation != null) changes.analysis = {...changes.analysis, auto_start: automation};
+    const result = await reviewAPI('/api/config/settings', {changes, ...(style ? {style} : {})});
+    Object.entries(result.values).forEach(([section, fields]) => view.config.settings[section] = {...view.config.settings[section], ...fields});
+    if (view.config.editor) view.config.editor.values = result.values;
+    view.subtitleDraft = view.automationDraft = null;
+    view.configDraft = {};
+    if (pageKey() === "settings") {
+      drawSettings();
+      setMessage("runtime-message", `更改已保存。${result.restart_required.length ? "高级或路径参数重启相关服务后生效。" : "用于新片段和下次清理检查。"}${result.environment_overrides.length ? "部分参数被环境变量覆盖：" + result.environment_overrides.join('、') : ""}`);
     }
-    if (automation != null) {
-      const result = await reviewAPI("/api/config/analysis-automation", {auto_start: automation});
-      view.config.settings.analysis.auto_start = result.auto_start;
-      view.automationDraft = null;
-    }
-    if (pageKey() === "settings") { drawSettings(); setMessage("runtime-message", "更改已保存，立即用于新任务和新片段。已有片段与已开始任务保持当前配置。"); }
   } catch (error) {
     if (pageKey() === "settings") {
       drawSettings();
-      setMessage("runtime-message", `保存未全部完成：${error.message}。未成功保存的修改仍保留；已保存的分区已生效。`);
+      setMessage("runtime-message", `保存失败：${error.message}。修改草稿保留。`);
     }
   } finally {
     view.saving = false;
@@ -720,16 +792,16 @@ function drawSettings() {
     body =
       `<section class="card card-pad"><h2>录播切片方式</h2><form id="analysis-automation-form"><label><input id="analysis-auto-start" type="checkbox" ${(view.automationDraft ?? s.analysis?.auto_start) === true ? "checked" : ""}> 录制结束后自动 AI 切片</label><p class="muted">默认关闭。开发期间由你在录播库选择场次，再点击“AI 分析本场录播”。</p><p class="hint">开启并保存后，新完成的录播会自动将候选视频发送给 AI 分析并生成待审核片段。发布仍需人工确认。</p><div class="action-row"><button id="analysis-automation-save" class="btn btn-primary" type="submit">保存切片设置</button><span id="analysis-automation-message" role="status">${s.analysis?.auto_start === true ? "当前已开启自动切片" : "当前已关闭自动切片"}</span></div><p class="hint">关闭会取消尚未开始的自动分析；已经开始的分析完成当前任务。保存立即生效，已有录播不会补发。</p></form></section>`;
   else if (view.tab === "paths")
-    body = configSection("媒体目录", {videos_dir: s.paths?.videos_dir}) +
-      notice("当前生效策略：第 5 天提醒，第 7 天到期排回收，移入 Windows 回收站。正在执行的任务受保护。") +
-      '<p class="muted">5 天清理、发布后 24 小时清理和手动保留尚未接入当前服务。</p><a class="btn btn-secondary" href="#/recycle">查看到期与回收记录</a>';
+    body = editableConfigSection("存储路径", "paths") + editableConfigSection("自动清理规则", "retention") +
+      notice("自动清理仅回收源录播与中间素材，成片与审核记录保留。活跃任务和手动保留的录播受保护。移入 Windows 回收站后仍需清空回收站才能释放空间。") +
+      '<a class="btn btn-secondary" href="#/recycle">查看到期与回收记录</a>';
   else if (view.tab === "publish")
     body = `<section class="card card-pad"><h2>投稿账号</h2><p>${c.diagnostics.cookie_configured ? "凭据已配置 · 登录有效性尚未检查" : "尚未配置投稿凭据"}</p><p class="muted">成片阶段确认标题、简介与标签，批准后进入发布队列。</p></section>` +
-      configSection("全局发布配置", s.upload) +
-      '<a class="btn btn-secondary" href="#/streamer">编辑主播默认简介与标签</a>';
+      editableConfigSection("全局发布默认值", "publication") +
+      '<p class="hint">标题模板支持 {title}、{streamer}、{room}、{date}。空分区继承上传默认分区。单条成片修改不会覆盖默认值。</p><a class="btn btn-secondary" href="#/streamer">编辑主播发布默认值</a>';
   else if (view.tab === "advanced")
-    body = notice("以下参数由当前服务提供只读摘要；修改配置文件后重启相关服务生效。网页编辑接口尚未接入。") +
-      `<div class="config-grid">${configSection("AI 分析", s.mimo)}${configSection("候选召回", s.burst)}${configSection("质量门", s.quality)}${configSection("转写与对齐", s.subtitle)}${configSection("分析参数", s.analysis)}${configSection("Worker", s.worker)}${configSection("配置路径", s.paths)}</div>` +
+    body = notice("高级参数保存后重启相关服务生效，已开始任务继续使用原配置。") +
+      `<div class="config-grid">${editableConfigSection("AI 分析", "mimo")}${editableConfigSection("候选召回", "burst")}${editableConfigSection("质量门", "quality")}${editableConfigSection("转写与对齐", "subtitle")}${editableConfigSection("分析参数", "analysis", ["auto_start"])}${editableConfigSection("转写性能", "multi_modal")}${editableConfigSection("Worker", "worker")}${editableConfigSection("源录播", "video")}${editableConfigSection("上传性能", "upload")}</div>` +
       `<details class="diagnostics"><summary>本地依赖与模型诊断</summary><p>设备可见和模型缓存不等于推理成功。</p><pre>${htmlEscape(JSON.stringify({asr: c.asr, diagnostics: c.diagnostics}, null, 2))}</pre></details>`;
   else
     body = subtitleStyleSettingsHTML(s.edit) + notice("保存立即用于新片段。已有片段需应用默认样式并重新生成成片；已批准成片受保护。");
@@ -743,6 +815,7 @@ function drawSettings() {
     `<div class="settings-body">${body}<p id="runtime-message" role="status"></p><footer class="page-foot">本机部署 · 后台独立运行</footer></div></div><div id="settings-save-bar" class="settings-save-bar" hidden><span id="settings-dirty-count" role="status"></span><button id="settings-discard" class="btn btn-secondary">放弃修改</button><button id="settings-save-all" class="btn btn-primary">保存更改</button></div>`;
   restorePageScroll("settings");
   bindSubtitleSettings();
+  bindEditableSettings();
   const analysisForm = document.getElementById("analysis-automation-form");
   if (analysisForm) {
     document.getElementById("analysis-auto-start").onchange = event => {
@@ -751,7 +824,7 @@ function drawSettings() {
     };
     analysisForm.onsubmit = event => { event.preventDefault(); saveSettingsChanges(); };
   }
-  document.getElementById("settings-discard").onclick = () => { view.subtitleDraft = view.automationDraft = null; drawSettings(); };
+  document.getElementById("settings-discard").onclick = () => { view.subtitleDraft = view.automationDraft = null; view.configDraft = {}; drawSettings(); };
   document.getElementById("settings-save-all").onclick = saveSettingsChanges;
   updateSettingsSaveBar();
   document.getElementById("runtime-refresh").onclick = renderRuntimeSettings;

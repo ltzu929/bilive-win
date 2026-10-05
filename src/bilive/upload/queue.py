@@ -7,7 +7,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from bilive.db.conn import DatabaseUnavailable, open_connection, require_table
+from bilive.db.conn import DatabaseUnavailable, open_connection, require_table, migrate_upload_columns
 from bilive.domain.models import UploadStage
 from bilive.domain.states import activation_target_stage, manual_retry_allowed
 
@@ -23,6 +23,8 @@ class UploadQueue:
         try:
             require_table(conn, 'upload_queue')
             require_table(conn, 'upload_history')
+            if not readonly:
+                migrate_upload_columns(conn)
         except Exception:
             conn.close()
             raise
@@ -47,6 +49,7 @@ class UploadQueue:
         title: str = "",
         description: str = "",
         tags: list[str] | None = None,
+        *, tid: int | None = None, cover_path: str | None = None,
     ) -> dict:
         """video_path 唯一暂存 staged。未确认 staged 不可领取。"""
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -55,12 +58,14 @@ class UploadQueue:
             cur = conn.execute(
                 """
                 INSERT INTO upload_queue
-                    (video_path, stage, title, description, tags, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (video_path, stage, title, description, tags, created_at, updated_at, tid, cover_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(video_path) DO UPDATE SET
                     title=excluded.title,
                     description=excluded.description,
                     tags=excluded.tags,
+                    tid=COALESCE(excluded.tid,upload_queue.tid),
+                    cover_path=COALESCE(excluded.cover_path,upload_queue.cover_path),
                     updated_at=excluded.updated_at
                 WHERE upload_queue.stage='staged' AND upload_queue.remote_filename IS NULL
                 """,
@@ -72,6 +77,8 @@ class UploadQueue:
                     json.dumps(tags or [], ensure_ascii=False),
                     now,
                     now,
+                    tid,
+                    cover_path,
                 ),
             )
             if cur.rowcount == 0:
@@ -219,8 +226,8 @@ class UploadQueue:
         conn = self._conn()
         try:
             conn.execute(
-                "UPDATE upload_queue SET stage=?, bvid=?, updated_at=?, last_error=NULL WHERE video_path=?",
-                (UploadStage.PUBLISHED.value, bvid, now, video_path),
+                "UPDATE upload_queue SET stage=?, bvid=?, updated_at=?, published_at=COALESCE(published_at,?), last_error=NULL WHERE video_path=?",
+                (UploadStage.PUBLISHED.value, bvid, now, time.time(), video_path),
             )
             conn.execute(
                 "INSERT INTO upload_history (video_path, stage, detail, created_at) VALUES (?,?,?,?)",
@@ -240,6 +247,26 @@ class UploadQueue:
             if changed != 1:
                 raise ValueError("media upload not confirmed")
             conn.commit()
+        finally:
+            conn.close()
+
+    def save_cover_url(self, video_path: str, url: str) -> None:
+        conn = self._conn()
+        try:
+            conn.execute('UPDATE upload_queue SET cover_url=? WHERE video_path=?', (url, video_path))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def recent_published(self, paths: list[str], limit: int = 5) -> list[dict]:
+        if not paths:
+            return []
+        conn = self._conn(readonly=True)
+        try:
+            rows = conn.execute(f"SELECT * FROM upload_queue WHERE stage='published' AND bvid IS NOT NULL "
+                                f"AND video_path IN ({','.join('?' for _ in paths)}) ORDER BY updated_at DESC LIMIT ?",
+                                [*paths, limit]).fetchall()
+            return [dict(row) for row in rows]
         finally:
             conn.close()
 

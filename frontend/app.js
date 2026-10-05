@@ -20,6 +20,7 @@ function route() {
       return;
     }
     settingsView.subtitleDraft = settingsView.automationDraft = null;
+      settingsView.configDraft = {};
   }
   if (page !== pageKey()) {
     location.hash = "#/library";

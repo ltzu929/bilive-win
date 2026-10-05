@@ -65,6 +65,8 @@ upload_queue = UploadQueue(settings.paths.db_path or Path("src/db/data.db"))
 workbench = Workbench(settings.videos_root(), artifacts_root, jobs, subtitles, upload_queue,
     settings.subtitle_style())
 workbench.default_style_provider = lambda: load_settings(settings.paths.config_path).subtitle_style()
+from bilive.lifecycle.runtime import configure_workbench
+configure_workbench(workbench, settings.paths.config_path, recorder_client)
 worker_control = WorkerControl(Path(__file__).resolve().parents[3],
     Path(os.environ.get("BILIVE_RUNTIME_DIR", ".runtime")),int(os.environ.get("BILIVE_WORKER_PORT","2235")))
 
@@ -222,12 +224,42 @@ class MetadataRequest(BaseModel):
     title: str
     description: str = ''
     tags: list[str] = Field(default_factory=list)
+    tid: int | None = Field(default=None, ge=1, le=10000)
 
 
 @app.post('/api/segments/{segment_id}/metadata')
 def save_segment_metadata(segment_id: str, request: MetadataRequest):
     return workbench.save_metadata(segment_id, request.expected_revision,
-                                   request.title, request.description, request.tags)
+                                   request.title, request.description, request.tags, request.tid)
+
+
+class PreviewRequest(BaseModel):
+    expected_revision: int
+    ranges: list[list[float]]
+
+
+@app.post('/api/segments/{segment_id}/preview')
+def record_final_preview(segment_id: str, request: PreviewRequest):
+    return workbench.record_preview(segment_id, request.expected_revision, request.ranges)
+
+
+@app.get('/api/segments/{segment_id}/cover')
+def default_final_cover(segment_id: str):
+    segment = workbench.load(segment_id)
+    path = Path(segment.get('cover_path') or '')
+    expected = workbench.artifacts / segment_id / 'cover.jpg'
+    if path.resolve() != expected.resolve() or not path.is_file():
+        raise FileNotFoundError('当前成片暂无默认封面')
+    return FileResponse(path, media_type='image/jpeg', headers={'Cache-Control': 'no-cache'})
+
+
+class RetainRequest(BaseModel):
+    keep: StrictBool
+
+
+@app.post('/api/recordings/{task_id}/retain')
+def retain_recording(task_id: str, request: RetainRequest):
+    return {'record': SourceReview(workbench).retain(task_id, request.keep)}
 
 
 @app.post('/api/segments/{segment_id}/style')
@@ -237,14 +269,19 @@ def save_segment_style(segment_id: str, request: StyleRequest):
 
 @app.get('/api/recordings/{task_id}/lifecycle')
 def get_lifecycle(task_id: str):
-    return {'record': SourceReview(workbench).load(task_id)}
+    return {'record': SourceReview(workbench).view(task_id)}
 
 
 @app.get('/api/lifecycle')
 def list_lifecycle(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)):
     service = SourceReview(workbench)
-    paths = sorted(service.root.glob('*.json'), key=lambda p:p.stat().st_mtime_ns, reverse=True)
-    return {'total':len(paths), 'items':[service.load(p.stem) for p in paths[offset:offset+limit]]}
+    tasks = {p.stem for p in service.root.glob('*.json')}
+    protected = service.protected()
+    tasks.update(task_id_from_source_relpath(p.relative_to(workbench.videos).as_posix())
+                 for p in workbench.videos.rglob('*.mp4') if p.resolve() not in protected)
+    records = [service.view(task) for task in tasks]
+    records.sort(key=lambda r:r['retention_started_at'], reverse=True)
+    return {'total':len(records), 'items':records[offset:offset+limit]}
 
 
 @app.post('/api/recordings/{task_id}/finish-review')
@@ -467,7 +504,10 @@ def config_summary():
     data = asdict(settings)
     cookie = settings.paths.cookie_file or Path('.secrets/bilibili.cookie')
     from bilive.worker.preflight import asr_dependency_snapshot
-    return {'settings':data, 'asr':asr_dependency_snapshot(settings), 'diagnostics': {
+    from bilive.config.web_settings import editable_values, schema
+    saved = load_settings(settings.paths.config_path) if settings.paths.config_path else settings
+    return {'settings':data, 'editor': {'values': editable_values(saved), 'schema': schema(),
+            'runtime_values': editable_values(settings)}, 'asr':asr_dependency_snapshot(settings), 'diagnostics': {
         'ffmpeg':bool(shutil.which('ffmpeg')), 'ffprobe':bool(shutil.which('ffprobe')),
         'mimo_key_configured':bool(os.environ.get('MIMO_API_KEY')),
         'cookie_configured':cookie.is_file(), 'login_verified':False,
@@ -485,6 +525,58 @@ class DefaultSubtitleStyleRequest(BaseModel):
 
 class AnalysisAutomationRequest(BaseModel):
     auto_start: StrictBool
+
+
+class SettingsChangesRequest(BaseModel):
+    changes: dict[str, dict[str, Any]]
+    style: dict[str, Any] | None = None
+
+
+def cancel_automatic_pending():
+    cancelled = 0
+    for _, job in jobs.valid_jobs(ActionJobStatus.PENDING):
+        if job.action == 'start_analysis' and job.payload.get('automatic'):
+            try:
+                jobs.cancel_pending(job.job_id)
+                rel = source_relpath_from_task_id(job.target)
+                source = (workbench.videos / rel).resolve()
+                if not source.is_relative_to(workbench.videos):
+                    raise ValueError('automatic analysis source escapes root')
+                source.with_suffix('.mp4.pending').unlink(missing_ok=True)
+                cancelled += 1
+            except ActionConflict:
+                pass
+    return cancelled
+
+
+@app.post('/api/config/settings')
+def save_workbench_settings(request: SettingsChangesRequest):
+    from bilive.config.web_settings import save_changes, validate_changes
+    from bilive.vendor.subtitle_style import validate_style, SubtitleStyle
+    if settings.paths.config_path is None:
+        raise HTTPException(status_code=503, detail='当前服务没有可保存的配置文件')
+    changes = dict(request.changes)
+    # Appearance uses the existing validator but joins the same atomic TOML write.
+    if request.style is not None:
+        validate_style(request.style)
+        style = SubtitleStyle.from_mapping(request.style).to_mapping()
+        changes['edit'] = dict.fromkeys(('alignment', 'outline', 'primary_colour', 'outline_colour'))
+        changes['edit'].update({'font_family': style.pop('font_name'), **style})
+    if not request.changes and request.style is None:
+        raise ValueError('没有设置修改')
+    if request.changes:
+        validate_changes(request.changes)
+    with workbench.lock():
+        result = save_changes(settings.paths.config_path, changes)
+        saved = load_settings(settings.paths.config_path)
+        settings.analysis.auto_start = saved.analysis.auto_start
+        settings.edit = saved.edit
+        settings.publication = saved.publication
+        settings.retention = saved.retention
+        workbench.default_style = settings.subtitle_style()
+        result['cancelled_pending'] = cancel_automatic_pending() if not saved.analysis.auto_start else 0
+    result['style'] = saved.subtitle_style()
+    return result
 
 
 @app.post('/api/config/analysis-automation')
@@ -570,7 +662,11 @@ def service_status() -> dict[str, Any]:
 @app.get('/api/streamers/{room}/profile')
 def streamer_profile(room: str):
     from bilive.vendor import streamer_profiles as profiles
+    from bilive.lifecycle.profiles import room_from_source
+    paths = [s['final_path'] for p in workbench.root.glob('*.json')
+             if room_from_source((s := workbench.load(p.stem))['source_relpath']) == room and s.get('final_path')]
     return {'profile':profiles.read_streamer_profile(workbench.videos, room),
+            'recent_published':upload_queue.recent_published(paths),
             'evidence':profiles.streamer_evidence_summary(workbench.videos, room),
             'recommendations':profiles.read_streamer_recommendations(workbench.videos, room)}
 

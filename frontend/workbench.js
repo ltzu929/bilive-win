@@ -413,7 +413,7 @@ function updateReviewActions() {
     transcribe.className = `btn btn-sm ${!subtitleReady && !document.querySelector("#review-lines tr") ? "btn-primary" : "btn-secondary"}`;
   }
   document.querySelectorAll(
-    '#review-lines input, #review-lines textarea, #review-lines [data-delete-line], #review-style, #review-style-save, #review-style-default, #review-drop, #review-drop-open, #review-rejudge, #review-range, #review-add-line, #review-meta-title, #review-meta-description, #review-meta-tags, #review-metadata-save',
+    '#review-lines input, #review-lines textarea, #review-lines [data-delete-line], #review-style, #review-style-save, #review-style-default, #review-drop, #review-drop-open, #review-rejudge, #review-range, #review-add-line, #review-meta-title, #review-meta-description, #review-meta-tags, #review-meta-tid, #review-metadata-save',
   ).forEach((element) => { element.disabled = !!locked; });
   const badge = document.getElementById("review-draft-badge");
   if (badge) {
@@ -507,6 +507,10 @@ function arrangeReviewWorkbench() {
   finalPanel.id = "final-panel";
   finalPanel.hidden = review.tab !== "final";
   finalPanel.innerHTML = '<h3>成片确认</h3><p class="muted">在上方切换到当前成片预览，核对投稿资料后批准并发布。</p>';
+  if (review.segment) {
+    const s = review.segment;
+    finalPanel.insertAdjacentHTML('beforeend', `<p id="final-preview-status" role="status">${s.preview_complete ? "已完整预览" : "尚未完整预览"} · 预览记录不影响人工批准</p>${s.cover_path ? `<figure><img src="${apiURL(`/api/segments/${s.segment_id}/cover`)}?revision=${s.revision}" alt="系统生成的默认封面" style="max-width:240px"><figcaption>系统默认封面</figcaption></figure>` : '<p class="muted">生成成片时自动生成默认封面。</p>'}`);
+  }
   if (metadata) finalPanel.append(metadata);
   finalPanel.append(footer);
   footer.querySelector(".hint")?.remove();
@@ -612,7 +616,7 @@ function reviewMarkup(s, task, lines, initial) {
     dialogHTML(
       "finish-dialog",
       "整场审核与回收",
-      `<label><input type="checkbox" id="review-no-content">确认本场无可保留内容</label><div class="action-row"><button id="review-finish" class="btn btn-primary">完成整场审核并排回收</button></div><p id="source-review-message" role="status">${complete ? "审核记录已保存" : "整场尚未终审"}</p><div class="action-row"><span id="source-drag" draggable="true" tabindex="0">拖动当前源场次到回收区</span><button id="source-recycle-zone" class="btn btn-secondary">源包回收区（也可点击）</button></div><p class="muted">回收沿用整场审核与源包检查，后台会显示阻塞原因。</p>`,
+      `<label><input type="checkbox" id="review-no-content">确认本场无可保留内容</label><div class="action-row"><button id="review-finish" class="btn btn-primary">完成整场审核</button></div><p id="source-review-message" role="status">${complete ? "审核记录已保存" : "整场尚未终审"}</p><div class="action-row"><span id="source-drag" draggable="true" tabindex="0">拖动当前源场次到回收区</span><button id="source-recycle-zone" class="btn btn-secondary">源包回收区（也可点击）</button></div><p class="muted">回收沿用整场审核与源包检查，后台会显示阻塞原因。</p>`,
     )
   );
 }
@@ -797,7 +801,7 @@ function drawManualWorkbench() {
         `/api/recordings/${task.task_id}/finish-review`,
         { no_content: document.getElementById("review-no-content").checked },
       );
-      e.textContent = `审核已保存 · ${out.recycle_queued ? "回收已排队" : "回收入队失败，可在回收页重试"}${out.detail ? " · " + out.detail : ""}`;
+      e.textContent = `审核已保存 · ${out.recycle_queued ? "回收已排队" : out.reason === 'retained_or_waiting_deadline' ? "按保留标记和清理期限处理，暂不自动回收" : "回收入队失败，可在回收页重试"}${out.detail ? " · " + out.detail : ""}`;
       document.getElementById("review-finish").disabled = true;
     } catch (err) {
       if (!stillHere()) return;
@@ -927,12 +931,13 @@ function drawManualWorkbench() {
     } catch (error) { if (stillHere()) { updateReviewActions(); reviewMessage(`保留未保存：${error.message}`); } }
   };
   const metadataKey = metadataDraftKey();
-  const metadataControls = ["title", "description", "tags"].map(key => document.getElementById(`review-meta-${key}`));
+  document.getElementById('review-meta-tags').closest('label').insertAdjacentHTML('afterend', `<label class="field">投稿分区<input id="review-meta-tid" type="number" min="1" max="10000" value="${s.tid || ''}"></label>`);
+  const metadataControls = ["title", "description", "tags", "tid"].map(key => document.getElementById(`review-meta-${key}`));
   let metadataRevision = s.revision;
   try {
     const draft = JSON.parse(localStorage.getItem(metadataKey));
     if (draft) {
-      metadataControls.forEach((control, i) => { control.value = draft.values[i]; });
+      metadataControls.forEach((control, i) => { if (draft.values[i] != null) control.value = draft.values[i]; });
       metadataRevision = draft.revision;
       review.metadataUnsaved = true;
       setMessage("review-metadata-status", draft.revision === s.revision ? "已恢复投稿资料草稿" : "草稿版本已变化，请核对并重新编辑后保存");
@@ -959,6 +964,7 @@ function drawManualWorkbench() {
         title: metadataControls[0].value,
         description: metadataControls[1].value,
         tags: metadataControls[2].value.split(/[,，\n]/).map(t => t.trim()).filter(Boolean),
+        tid: metadataControls[3].value ? Number(metadataControls[3].value) : null,
       });
       localStorage.removeItem(metadataKey);
       await renderManualWorkbench();
@@ -1111,7 +1117,24 @@ function drawManualWorkbench() {
     });
   };
   source.ontimeupdate = () => highlightSubtitle(source);
-  if (final) final.ontimeupdate = () => highlightSubtitle(final);
+  if (final) {
+    final.ontimeupdate = () => highlightSubtitle(final);
+    let savingPreview = false;
+    const persistPreview = async () => {
+      if (savingPreview || !final.played.length) return;
+      const ranges = Array.from({length: final.played.length}, (_, i) => [final.played.start(i), final.played.end(i)]).filter(([a,b]) => b > a);
+      if (!ranges.length) return;
+      savingPreview = true;
+      try {
+        const result = await reviewAPI(`/api/segments/${s.segment_id}/preview`, {expected_revision:s.revision, ranges});
+        if (stillHere()) setMessage('final-preview-status', `${result.complete ? '已完整预览' : '尚未完整预览'} · 预览记录不影响人工批准`);
+      } catch (error) {
+        if (stillHere()) setMessage('final-preview-status', `预览记录未保存：${error.message}。仍可人工批准。`);
+      } finally { savingPreview = false; }
+    };
+    final.onpause = persistPreview;
+    final.onended = persistPreview;
+  }
   document.getElementById("review-add-line").onclick = () => {
     tbody.insertAdjacentHTML(
       "beforeend",
@@ -1274,6 +1297,8 @@ async function loadStreamerProfile() {
         ["display_name", "显示名"],
         ["aliases", "别名（逗号分隔）"],
         ["default_tags", "默认标签（逗号分隔）"],
+        ["default_title_template", "默认标题模板（空值继承全局）"],
+        ["default_tid", "默认投稿分区（空值继承全局）"],
       ]
         .map(
           ([key, label]) =>
@@ -1303,6 +1328,8 @@ async function loadStreamerProfile() {
       ${data.recommendations.map((r) => `<article><p>${htmlEscape(r.changes?.approved_guidance)}</p><p>状态 ${htmlEscape(r.status)} · 样本 ${r.sample_size}</p><details><summary>查看证据 ID</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(r.evidence_ids, null, 2))}</pre></details><button class="btn btn-secondary" data-apply="${htmlEscape(r.recommendation_id)}" ${r.status === "applied" ? "disabled" : ""}>人工应用建议</button></article>`).join("") || "<p>暂无建议。</p>"}
       <h2>审核经验（共 ${experience.total} 条）</h2>${experience.items.map((e) => `<article><p>${htmlEscape(e.experience_type)} · ${htmlEscape(e.source_rel_path)}</p><p>${htmlEscape(e.note)}</p><details><summary>查看源区间和内容证据</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(e, null, 2))}</pre></details></article>`).join("") || "<p>暂无已保存的人工审核经验。</p>"}<div class="action-row"><button id="experience-prev" class="btn btn-secondary" ${streamerView.offset === 0 ? "disabled" : ""}>上一页</button><button id="experience-next" class="btn btn-secondary" ${streamerView.offset + 20 >= experience.total ? "disabled" : ""}>下一页</button></div></div></div>`;
     const profileForm = document.getElementById("profile-form");
+    const publications = data.recent_published || [];
+    profileForm.parentElement.insertAdjacentHTML('beforebegin', `<section class="recent-recordings"><h2>最近发布</h2>${publications.map(item => `<a href="https://www.bilibili.com/video/${encodeURIComponent(item.bvid)}" target="_blank" rel="noopener">${htmlEscape(item.title)} · ${beijingTime(item.published_at || Date.parse(item.updated_at)/1000)}</a>`).join('') || '<p class="muted">暂无成功发布记录</p>'}</section>`);
     const advanced = document.createElement("details");
     advanced.innerHTML = '<summary>高级覆盖与人工指导</summary>';
     for (const key of ["approved_guidance", "default_slice_options", "default_subtitle_style"]) {
@@ -1335,7 +1362,7 @@ async function loadStreamerProfile() {
                 .filter(Boolean)
             : key.endsWith("options") || key.endsWith("style")
               ? JSON.parse(value)
-              : value;
+              : key === 'default_tid' ? (value ? Number(value) : null) : value;
         });
         await reviewAPI(`/api/streamers/${room}/profile`, payload);
       });

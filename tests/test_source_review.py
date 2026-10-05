@@ -36,7 +36,8 @@ def test_no_content_requires_confirmation_and_recycles_complete_package(env):
     with pytest.raises(ActionConflict, match='confirmation'):
         service.finish(task)
     result = service.finish(task, no_content=True)
-    assert result['review_saved'] and result['recycle_queued']
+    assert result['review_saved'] and not result['recycle_queued']
+    assert service.queue(task)['queued']  # Explicit manual recycle remains available.
     assert (wb.videos / 'session.mp4.done').is_file()
     queued = wb.jobs.claim('test')
     service.execute(queued)
@@ -70,6 +71,7 @@ def test_published_cleaned_final_does_not_block_review(env):
 def test_partial_move_resumes_frozen_manifest_even_source_is_gone(env):
     wb, service, task = env
     service.finish(task, True)
+    service.queue(task)
     queued = wb.jobs.claim('test')
     real = service.mover
     count = 0
@@ -95,6 +97,7 @@ def test_partial_move_resumes_frozen_manifest_even_source_is_gone(env):
 def test_unknown_missing_item_stops_instead_of_guessing_success(env):
     wb, service, task = env
     service.finish(task, True)
+    service.queue(task)
     queued = wb.jobs.claim('test')
     record = service.load(task)
     record['frozen_manifest'] = service.manifest('session.mp4', task)
@@ -109,6 +112,7 @@ def test_unknown_missing_item_stops_instead_of_guessing_success(env):
 def test_protected_final_and_traversal_are_blocked_before_any_move(env):
     wb, service, task = env
     service.finish(task, True)
+    service.queue(task)
     queued = wb.jobs.claim('test')
     record = service.load(task)
     record['frozen_manifest'] = [dict(root='videos', relpath='../outside.mp4')]
@@ -125,12 +129,14 @@ def test_protected_final_and_traversal_are_blocked_before_any_move(env):
         service.checked(record['frozen_manifest'][0], service.protected())
 
 
-def test_expiry_queues_despite_unfinished_analysis_and_preserves_finals(env):
+def test_expiry_protects_active_analysis_then_preserves_finals(env):
     wb, service, task = env
     service.ensure('session.mp4', now=100)
-    wb.jobs.submit('start_analysis', task, {})
+    analysis = wb.jobs.submit('start_analysis', task, {})
     result = service.maintenance(now=100 + 7 * DAY)[0]
-    assert result['queued']
+    assert not result['queued']
+    wb.jobs.cancel_pending(analysis.job_id)
+    assert service.maintenance(now=100 + 5 * DAY)[0]['queued']
     final = wb.artifacts / 'final_output/keep.mp4'
     final.parent.mkdir(parents=True)
     final.write_bytes(b'protected final')
@@ -162,9 +168,9 @@ def test_retention_dates_persist_and_maintenance_only_queues(env):
     wb, service, task = env
     record = service.ensure('session.mp4', now=100)
     assert service.ensure('session.mp4', now=10000)['deadline'] == record['deadline']
-    at5 = service.maintenance(now=100 + 5 * DAY)[0]
+    at5 = service.maintenance(now=100 + 4 * DAY)[0]
     assert at5['warn_day5'] and not at5['expired_day7'] and not wb.jobs.busy()
-    at7 = service.maintenance(now=100 + 7 * DAY)[0]
+    at7 = service.maintenance(now=100 + 5 * DAY)[0]
     assert at7['queued']
     assert (wb.videos / 'session.mp4').exists()
     queued = wb.jobs.claim('test')
@@ -181,6 +187,6 @@ def test_legacy_recording_date_precedes_creation_time_and_invalid_date_falls_bac
     for name in (valid, invalid):
         (wb.videos / name).write_bytes(b'isolated')
     now = 1800000000
-    expected = datetime.datetime(2026, 9, 23, 21, 10, tzinfo=datetime.timezone.utc).timestamp()
+    expected = datetime.datetime(2026, 9, 23, 21, 10, tzinfo=datetime.timezone(datetime.timedelta(hours=8))).timestamp()
     assert service.ensure(valid, now)['retention_started_at'] == expected
     assert service.ensure(invalid, now)['retention_started_at'] == now

@@ -24,6 +24,21 @@ class SourceReview:
         path = self.root / f"{validate_id(task)}.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
 
+    def view(self, task: str) -> dict:
+        rel = source_relpath_from_task_id(validate_id(task))
+        record = self.load(task)
+        if record is None:
+            source = self.wb.source(rel)
+            started = _parse_time_from_name(rel)
+            record = dict(task_id=task, source_relpath=rel,
+                          retention_started_at=started if started is not None else source.stat().st_mtime,
+                          review_state='unprocessed', trash_status=None, frozen_manifest=[], trash_results=[])
+        if record.get('trash_status') != 'done':
+            self.refresh_deadline(record)
+        record.setdefault('manual_keep', False)
+        record['cleanup_enabled'] = self.policy().enabled
+        return record
+
     def save(self, record: dict):
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.root / f"{validate_id(record['task_id'])}.json"
@@ -36,27 +51,94 @@ class SourceReview:
         record = self.load(task)
         if record:
             return record
-        self.wb.source(rel)
-        now = time.time() if now is None else now
+        source = self.wb.source(rel)
+        now = source.stat().st_mtime if now is None else now
         started = _parse_time_from_name(rel)
         started = now if started is None else started
         record = dict(task_id=task, source_relpath=rel, retention_started_at=started,
-                      deadline=started + 7 * DAY, review_state="unprocessed",
+                      deadline=started + self.policy().unprocessed_days * DAY, review_state="unprocessed",
                       trash_status=None, frozen_manifest=[], trash_results=[])
         self.save(record)
         return record
 
-    def active(self, rel: str, current=None, forced=False):
+    def policy(self):
+        from bilive.config.settings import RetentionConfig
+        return self.wb.settings_provider().retention if self.wb.settings_provider else RetentionConfig()
+
+    def refresh_deadline(self, record):
+        from datetime import datetime
+        policy = self.policy()
+        segments = [s for s in self.wb.list(record['source_relpath']) if s.get('decision') != 'drop']
+        published = []
+        for s in segments:
+            row = self.wb.uploads.get_by_path(s['final_path']) if s.get('final_path') else None
+            if not row or row['stage'] != 'published' or not row.get('bvid'):
+                continue
+            stamp = row.get('published_at')
+            if stamp is None:
+                stamp = datetime.fromisoformat(row['updated_at'].replace('Z', '+00:00')).timestamp()
+            published.append(stamp)
+        if segments and len(published) == len(segments):
+            record['published_at'] = max(published)
+            record['deadline'] = record['published_at'] + policy.published_hours * 3600
+            record['cleanup_reason'] = 'published'
+        else:
+            record.pop('published_at', None)
+            record['deadline'] = record['retention_started_at'] + policy.unprocessed_days * DAY
+            record['cleanup_reason'] = 'unprocessed'
+            if published:
+                record['deadline'] = max(record['deadline'], max(published) + policy.published_hours * 3600)
+                record['cleanup_reason'] = 'partially_published'
+        record['manual_keep'] = bool(record.get('manual_keep'))
+        return record
+
+    def retain(self, task: str, keep: bool):
+        if type(keep) is not bool:
+            raise ValueError('保留标记须为布尔值')
+        rel = source_relpath_from_task_id(validate_id(task))
+        with self.wb.lock():
+            record = self.ensure(rel)
+            if record.get('trash_status') in {'processing', 'done'} or record.get('trash_results'):
+                raise ActionConflict('已经开始回收，不能修改保留标记')
+            # Cancelling pending deletion and saving the hold share the same lock
+            # as execute; an already claimed job rechecks the hold before moving.
+            if keep:
+                for _, job in self.wb.jobs.valid_jobs(ActionJobStatus.PENDING):
+                    if job.target == task and job.action in {'trash_source', 'force_expired'}:
+                        self.wb.jobs.cancel_pending(job.job_id)
+                record.update(trash_status=None, review_state='review_complete' if record.get('reviewed_at') else 'unprocessed')
+            record['manual_keep'] = keep
+            self.refresh_deadline(record)
+            self.save(record)
+            return record
+
+    def check_protection(self, rel, record):
+        if record.get('manual_keep'):
+            raise ActionConflict('source is manually retained')
+        source = (self.wb.videos / rel).resolve()
+        # Remux targets use the FLV identity; analysis/recycle use MP4 identity.
+        flv_task = task_id_from_source_relpath(str(Path(rel).with_suffix('.flv')).replace('\\', '/'))
+        if any(j.target == flv_task for state in (ActionJobStatus.PENDING, ActionJobStatus.PROCESSING)
+               for _, j in self.wb.jobs.valid_jobs(state)):
+            raise ActionConflict('source remux is active')
+        if self.wb.recording_active_provider and self.wb.recording_active_provider(rel):
+            raise ActionConflict('source recording is active or its state is unavailable')
+        history = source.with_suffix('.mp4.task.json')
+        if history.is_file() and json.loads(history.read_text(encoding='utf-8')).get('status') == 'processing':
+            raise ActionConflict('source analysis is active')
+        for s in self.wb.list(rel):
+            row = self.wb.uploads.get_by_path(s['final_path']) if s.get('final_path') else None
+            if row and row['stage'] in {'uploading', 'publishing'}:
+                raise ActionConflict('upload is active')
+
+    def active(self, rel: str, current=None):
         task = task_id_from_source_relpath(rel)
         sids = {s['segment_id'] for s in self.wb.list(rel)}
         for status in (ActionJobStatus.PENDING, ActionJobStatus.PROCESSING):
             for _, job in self.wb.jobs.valid_jobs(status):
                 if job.job_id == current:
                     continue
-                if forced:
-                    blocked = job.target == task and job.action in {"trash_source", "force_expired"}
-                else:
-                    blocked = job.target in sids | {task}
+                blocked = job.target in sids | {task}
                 if blocked:
                     raise ActionConflict("source has an active task")
 
@@ -95,10 +177,14 @@ class SourceReview:
             record = self.ensure(rel)
             record.update(review_state='review_complete', review_result='no_content' if no_content else 'complete',
                           review_note=note, reviewed_at=time.time())
+            self.refresh_deadline(record)
             self.save(record)
             source.with_suffix('.mp4.done').touch()
+            if record.get('manual_keep') or not self.policy().enabled or time.time() < record['deadline']:
+                return dict(review_saved=True, recycle_queued=False, reason='retained_or_waiting_deadline', record=record)
             try:
-                job = self.wb.jobs.submit('trash_source', task, {})
+                self.check_protection(rel, record)
+                job = self.wb.jobs.submit('force_expired', task, {}, expired_retention=True)
             except Exception as exc:
                 return dict(review_saved=True, recycle_queued=False, detail=type(exc).__name__, record=record)
             record.update(review_state='trash_pending', trash_status='pending', trash_job_id=job.job_id)
@@ -112,11 +198,17 @@ class SourceReview:
             if record['trash_status'] == 'done':
                 return dict(queued=False, reason='already_recycled')
             if forced:
+                if not self.policy().enabled:
+                    raise ActionConflict('automatic cleanup is disabled')
+                self.refresh_deadline(record)
                 if (time.time() if now is None else now) < record['deadline']:
                     raise ActionConflict('source retention has not expired')
             elif record['review_state'] not in {'review_complete', 'trash_pending'}:
                 raise ActionConflict('review incomplete')
-            self.active(rel, forced=forced)
+            existing = self.wb.jobs.find_active('force_expired' if forced else 'trash_source', task)
+            same_recycle = existing and existing.action == ('force_expired' if forced else 'trash_source')
+            self.active(rel, existing.job_id if same_recycle else None)
+            self.check_protection(rel, record)
             job = self.wb.jobs.submit('force_expired' if forced else 'trash_source', task, {},
                                       expired_retention=forced)
             record.update(review_state='trash_pending', trash_status='pending', trash_job_id=job.job_id)
@@ -126,16 +218,22 @@ class SourceReview:
     def maintenance(self, now=None):
         now = time.time() if now is None else now
         results = []
+        protected = self.protected()
         for source in sorted(self.wb.videos.rglob('*.mp4')):
+            if source.resolve() in protected:
+                continue
             rel = source.relative_to(self.wb.videos).as_posix()
             with self.wb.lock():
                 record = self.ensure(rel, now)
-                if now >= record['retention_started_at'] + 5 * DAY and record['trash_status'] != 'done':
+                self.refresh_deadline(record)
+                if now >= record['deadline'] - DAY and record['trash_status'] != 'done':
                     record.setdefault('retention_warned_at', now)
-                    self.save(record)
-            result = dict(task_id=record['task_id'], warn_day5=now >= record['retention_started_at'] + 5 * DAY,
-                          expired_day7=now >= record['deadline'])
-            if result['expired_day7']:
+                self.save(record)
+            result = dict(task_id=record['task_id'], warn_day5=now >= record['deadline'] - DAY,
+                          expired_day7=now >= record['deadline'], expired=now >= record['deadline'],
+                          deadline=record['deadline'], manual_keep=record['manual_keep'],
+                          cleanup_reason=record['cleanup_reason'], enabled=self.policy().enabled)
+            if result['expired'] and self.policy().enabled:
                 try:
                     result.update(self.queue(record['task_id'], forced=True, now=now))
                 except ActionConflict as exc:
@@ -150,6 +248,11 @@ class SourceReview:
             for value in [s.get('final_path'), s.get('generated_path'), *s.get('artifact_history', [])]:
                 if value:
                     paths.add(Path(value).resolve())
+        conn = self.wb.uploads._conn(readonly=True)
+        try:
+            paths.update(Path(row['video_path']).resolve() for row in conn.execute('SELECT video_path FROM upload_queue'))
+        finally:
+            conn.close()
         return paths
 
     def checked(self, entry, protected, record=None):
@@ -216,10 +319,13 @@ class SourceReview:
             if record['trash_status'] == 'done':
                 return dict(ok=True, already_recycled=True)
             forced = job.action == 'force_expired'
-            if forced and time.time() < record['deadline']:
-                raise ActionConflict('source retention has not expired')
             rel = record['source_relpath']
-            self.active(rel, job.job_id, forced)
+            if forced:
+                self.refresh_deadline(record)
+                if not self.policy().enabled or time.time() < record['deadline']:
+                    raise ActionConflict('source retention has not expired or cleanup is disabled')
+            self.active(rel, job.job_id)
+            self.check_protection(rel, record)
             if not forced:
                 if record['review_state'] not in {'review_complete', 'trash_pending'}:
                     raise ActionConflict('review incomplete')

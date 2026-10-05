@@ -18,7 +18,7 @@ function Get-BiliveTaskPlan {
         $Execute = $ShellExe
         $Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`""
         $LegacyAction = $null
-        if ($Kind -eq 'startup') {
+        if ($Kind -in @('startup','retention')) {
             $Execute = Join-Path $ProjectDir ($Entry.Venv + '\Scripts\pythonw.exe')
             $Launcher = Join-Path $ProjectDir 'scripts\run_windows_task.py'
             if (-not (Test-Path -LiteralPath $Execute) -or -not (Test-Path -LiteralPath $Launcher)) {

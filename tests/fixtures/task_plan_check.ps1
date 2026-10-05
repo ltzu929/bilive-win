@@ -13,8 +13,7 @@ Register-BiliveTaskPlan -Plan $Plan
 if ($script:Registered.Count -ne 3) { throw 'wrong registration count' }
 if ($script:Registered[2].Trigger.At -ne '03:00' -or -not $script:Registered[2].Settings.CatchUp) { throw 'retention schedule incorrect' }
 foreach ($Item in $script:Registered) {
-    $Windowless = if ($Item.Name -eq 'BiliveV2Retention') { $Item.Action.Arguments -match '-WindowStyle Hidden' }
-                  else { $Item.Action.Execute -match 'pythonw.exe$' -and $Item.Action.Arguments -match 'run_windows_task.py' }
+    $Windowless = $Item.Action.Execute -match 'pythonw.exe$' -and $Item.Action.Arguments -match 'run_windows_task.py'
     if ($Item.Principal.Type -ne 'Interactive' -or -not $Windowless -or $Item.Settings.MultipleInstances -ne 'IgnoreNew') { throw 'incorrect task boundary' }
 }
 $script:Updated=@()

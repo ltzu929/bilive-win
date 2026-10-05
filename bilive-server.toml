@@ -69,3 +69,14 @@ delete_after_success = true
 [dashboard]
 # 允许的额外请求 Host，修改后重启；不放宽同源写入规则。
 allowed_hosts = []
+
+[publication]
+title_template = "{title}"
+description = ""
+tags = []
+
+[retention]
+# 新策略先保存为关闭；从设置页启用后才自动执行，避免部署即回收历史源。
+enabled = false
+unprocessed_days = 5
+published_hours = 24

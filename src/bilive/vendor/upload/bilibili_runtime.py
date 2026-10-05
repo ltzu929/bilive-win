@@ -135,6 +135,22 @@ class BilibiliRuntimeClient:
     ) -> dict[str, Any]:
         return self.web.submit_uploaded_video(remote_filename, metadata)
 
+    def upload_cover(self, path: str) -> str:
+        """Pinned bilitool cover/up protocol, using the existing direct session."""
+        import base64
+        body = Path(path).read_bytes()
+        if not body or len(body) > 5_000_000:
+            raise ValueError('默认封面为空或过大')
+        response = self.session.post('https://member.bilibili.com/x/vu/web/cover/up',
+            data={'cover': 'data:image/jpeg;base64,' + base64.b64encode(body).decode('ascii'),
+                  'csrf': self.cookies['bili_jct']}, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        url = result.get('data', {}).get('url') if result.get('code') == 0 else None
+        if not isinstance(url, str) or not url.startswith(('http://', 'https://', '//')):
+            raise ValueError('B 站封面上传失败')
+        return url
+
 
 def build_runtime_client(settings: UploadSettings) -> BilibiliRuntimeClient:
     cookies = parse_cookie_file(settings.cookie_file)

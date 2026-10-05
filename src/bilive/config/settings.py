@@ -119,6 +119,21 @@ class UploadConfig:
 
 
 @dataclass
+class PublicationConfig:
+    title_template: str = "{title}"
+    description: str = ""
+    tags: list[str] = field(default_factory=list)
+    tid: int | None = None
+
+
+@dataclass
+class RetentionConfig:
+    enabled: bool = True
+    unprocessed_days: int = 5
+    published_hours: int = 24
+
+
+@dataclass
 class PathsConfig:
     videos_dir: Path = field(default_factory=lambda: Path("Videos"))
     log_dir: Path = field(default_factory=lambda: Path("logs"))
@@ -141,6 +156,8 @@ class Settings:
     paths: PathsConfig = field(default_factory=PathsConfig)
     multi_modal: MultiModalConfig = field(default_factory=MultiModalConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    publication: PublicationConfig = field(default_factory=PublicationConfig)
+    retention: RetentionConfig = field(default_factory=RetentionConfig)
 
     def subtitle_style(self) -> dict:
         return {'font_name':self.edit.font_family,**{k:v for k,v in vars(self.edit).items() if k != 'font_family' and v is not None}}
@@ -193,6 +210,10 @@ def load_settings(config_path: Path | None = None) -> Settings:
             "edit",
             "upload",
             "dashboard",
+            "publication",
+            "retention",
+            "multi_modal",
+            "paths",
         ):
             table_key = section
             if section == "burst":
@@ -225,8 +246,8 @@ def load_settings(config_path: Path | None = None) -> Settings:
 
         # Keep the pinned configuration domains and keys usable. Explicit newer
         # subtitle/edit keys take priority when both forms are present.
-        sliced=raw.get('slice',{}); sub=sliced.get('subtitle',{}); edit={**sliced.get('edit',{}), **raw.get('edit',{})}
-        multi=sliced.get('multi_modal',{}); analysis=sliced.get('analysis',{})
+        sliced=raw.get('slice',{}); sub={**sliced.get('subtitle',{}), **raw.get('subtitle',{})}; edit={**sliced.get('edit',{}), **raw.get('edit',{})}
+        multi={**sliced.get('multi_modal',{}), **raw.get('multi_modal',{})}; analysis={**sliced.get('analysis',{}), **raw.get('analysis',{})}
         for key in ('upload_line','tid'):
             if key in raw.get('video',{}) and key not in raw.get('upload',{}):
                 setattr(settings.upload,key,raw['video'][key])

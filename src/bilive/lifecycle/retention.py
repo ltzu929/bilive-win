@@ -83,6 +83,8 @@ def _parse_time_from_name(source_relpath: str) -> float | None:
     if not m:
         m = re.search(r'(20\d{2})(\d{2})(\d{2})-(\d{2})-(\d{2})-(\d{2})', name)
     if not m:
+        m = re.search(r'(20\d{2})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})', name)
+    if not m:
         return None
     import datetime
 
@@ -90,7 +92,7 @@ def _parse_time_from_name(source_relpath: str) -> float | None:
         dt = datetime.datetime(
             int(m.group(1)), int(m.group(2)), int(m.group(3)),
             int(m.group(4)), int(m.group(5)), int(m.group(6)),
-            tzinfo=datetime.timezone.utc,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=8)),
         )
     except ValueError:
         return None

@@ -39,3 +39,29 @@ def test_invalid_metadata_preserves_segment(env, patch):
     payload.update(patch)
     assert c.post(f"/api/segments/{s['segment_id']}/metadata", json=payload).status_code == 422
     assert wb.load(s['segment_id']) == s
+
+
+def test_default_cover_and_preview_are_versioned_but_never_a_publish_gate(env):
+    c, worker, wb, q = env
+    s = finalize(c, worker, subtitles(c, create(c)))
+    assert Path(s['cover_path']).read_bytes().startswith(b'\xff\xd8')
+    assert c.get(f"/api/segments/{s['segment_id']}/cover").status_code == 200
+    endpoint = f"/api/segments/{s['segment_id']}/preview"
+    payload = {'expected_revision':s['revision'], 'ranges':[[0,.5], [1,2]]}
+    assert c.post(endpoint, json=payload).json()['complete'] is False
+    payload['ranges'] = [[.5,1]]
+    assert c.post(endpoint, json=payload).json()['complete'] is True
+    assert wb.detail(s['segment_id'])['preview_complete']
+    payload['ranges'] = [[0,999]]
+    assert c.post(endpoint, json=payload).status_code == 422
+    # Publication metadata preserves the media's preview; subtitle edits invalidate it.
+    s = c.post(f"/api/segments/{s['segment_id']}/metadata", json={
+        'expected_revision':s['revision'], 'title':'new', 'tid':19}).json()
+    assert s['preview_complete']
+    assert c.post(endpoint, json={'expected_revision':s['revision']-1,'ranges':[[0,2]]}).status_code == 409
+    s = subtitles(c,s)
+    assert not wb.detail(s['segment_id'])['preview_complete']
+    s = finalize(c,worker,s)
+    assert not s['preview_complete']
+    response = c.post('/api/actions',json={'action':'approve_publish','target':s['segment_id'],'revision':s['revision']})
+    assert response.status_code == 200, response.text

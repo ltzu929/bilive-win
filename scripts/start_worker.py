@@ -51,6 +51,8 @@ def main() -> None:
     workbench = Workbench(videos, artifacts, jobs, subs, uploads,
         settings.subtitle_style())
     workbench.default_style_provider = lambda: load_settings(settings.paths.config_path).subtitle_style()
+    from bilive.lifecycle.runtime import configure_workbench
+    configure_workbench(workbench, settings.paths.config_path)
     worker = Worker(
         jobs,
         finalizer,

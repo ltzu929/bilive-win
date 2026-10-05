@@ -19,7 +19,15 @@ def main():
                    ActionJobStore(Path(os.environ.get('BILIVE_JOBS_DIR', '.bilive-jobs'))),
                    SubtitleStore(artifacts / 'subtitles'),
                    UploadQueue(settings.paths.db_path or Path('src/db/data.db')))
-    print(json.dumps(SourceReview(wb).maintenance(), ensure_ascii=False, indent=2))
+    from bilive.lifecycle.runtime import configure_workbench
+    configure_workbench(wb, settings.paths.config_path)
+    results = SourceReview(wb).maintenance()
+    print(json.dumps(results, ensure_ascii=False, indent=2))
+    if any(row.get('queued') for row in results):
+        from bilive.worker.control import WorkerControl
+        WorkerControl(Path(__file__).resolve().parents[1],
+            Path(os.environ.get('BILIVE_RUNTIME_DIR', '.runtime')),
+            int(os.environ.get('BILIVE_WORKER_PORT', '2235'))).wake()
 
 
 if __name__ == '__main__':

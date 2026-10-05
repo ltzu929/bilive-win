@@ -26,6 +26,8 @@ class Workbench:
                  subtitles: SubtitleStore, uploads: UploadQueue, default_style: dict | None = None):
         self.default_style = dict(default_style or {'font_name':'Noto Sans SC','font_size':20,'margin_v':60})
         self.default_style_provider = None
+        self.settings_provider = None
+        self.recording_active_provider = None
         self.videos = videos.resolve()
         self.artifacts = artifacts.resolve()
         self.root = self.artifacts / "segments"
@@ -91,6 +93,8 @@ class Workbench:
             raise ActionConflict('source has an active analysis or recycle action')
 
     def invalidate(self, s: dict) -> None:
+        s.pop('preview', None)
+        s.pop('cover_path', None)
         if s.get("final_path"):
             if s.get('publish_approval'):
                 raise ActionConflict('approved final is protected')
@@ -142,6 +146,9 @@ class Workbench:
                 profile = profile_for_source(self.videos, rel)
                 s.update(subtitle_style={**self.current_default_style(), **profile.get('default_subtitle_style', {})},
                          description=profile.get('default_description', ''), tags=profile.get('default_tags', []))
+                from bilive.media.publication import defaults_for_segment
+                s.update(defaults_for_segment(self, rel, title))
+                title = s['title']
             s.update(source_start=start, source_end=end, title=title, note=note)
             self.save(s)
             return s
@@ -164,7 +171,7 @@ class Workbench:
             self.save(s)
             return self.detail(sid)
 
-    def save_metadata(self, sid: str, expected: int, title: str, description: str, tags: list[str]) -> dict:
+    def save_metadata(self, sid: str, expected: int, title: str, description: str, tags: list[str], tid: int | None = None) -> dict:
         title = title.strip()
         tags = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
         if not title or len(title) > 80:
@@ -173,6 +180,8 @@ class Workbench:
             raise ValueError('简介不能超过 2000 个字符')
         if len(tags) > 10 or any(len(tag) > 20 or re.search(r'[,，\n]', tag) for tag in tags):
             raise ValueError('TAG 最多 10 个，每个不超过 20 个字符，不能包含逗号或换行')
+        from bilive.media.publication import validate_metadata
+        validate_metadata(title, description, tags, tid)
         with self.lock():
             s = self.load(sid)
             self.check_revision(s, expected)
@@ -183,11 +192,16 @@ class Workbench:
                 if row is None:
                     raise ActionConflict('final queue state is unknown')
                 try:
-                    self.uploads.stage(s['final_path'], title, description, tags)
+                    self.uploads.stage(s['final_path'], title, description, tags,
+                                       tid=tid if tid is not None else s.get('tid'), cover_path=s.get('cover_path'))
                 except ValueError as exc:
                     raise ActionConflict(str(exc)) from None
             saved = self.subtitles.load(sid)
             s.update(title=title, description=description, tags=tags, revision=expected+1)
+            if tid is not None:
+                s['tid'] = tid
+            if s.get('preview', {}).get('revision') == expected:
+                s['preview']['revision'] = s['revision']
             if s.get('subtitles_revision') == expected:
                 lines = [SubtitleLine(v['index'], v['start'], v['end'], v['text']) for v in saved['lines']]
                 self.subtitles.save(sid, s['source_end']-s['source_start'], lines, s['revision'])
@@ -290,6 +304,8 @@ class Workbench:
                           if s.get("subtitles_revision") == s["revision"] else [])
         s["final_valid"] = self.valid_final(s)
         s["active_job"] = self.active(sid)
+        s['preview_complete'] = bool(s.get('final_valid') and s.get('preview', {}).get('complete') and
+                                     s.get('preview', {}).get('revision') == s.get('final_revision'))
         if s.get('last_job_id'):
             for status in ActionJobStatus:
                 path = self.jobs.root / f"{s['last_job_id']}.{status.value}.json"
@@ -299,6 +315,36 @@ class Workbench:
                         s['transcription_job'] = {'status': status.value, 'payload': job.payload, 'result': job.result}
                     break
         return s
+
+    def record_preview(self, sid: str, expected: int, ranges: list[list[float]]) -> dict:
+        """Accumulate played intervals for this final only; never authorize upload."""
+        with self.lock():
+            s = self.load(sid)
+            self.check_revision(s, expected)
+            if not self.valid_final(s):
+                raise ActionConflict('没有当前版本的可预览成片')
+            duration = s['source_end'] - s['source_start']
+            if len(ranges) > 200:
+                raise ValueError('预览区间过多')
+            previous = s.get('preview', {})
+            intervals = list(previous.get('ranges', [])) if previous.get('revision') == expected else []
+            for pair in ranges:
+                if (len(pair) != 2 or not all(math.isfinite(v) for v in pair) or
+                        pair[0] < 0 or pair[1] <= pair[0] or pair[1] > duration + .5):
+                    raise ValueError('预览区间无效')
+                intervals.append([pair[0], min(pair[1], duration)])
+            merged = []
+            for start, end in sorted(intervals):
+                if merged and start <= merged[-1][1] + .25:
+                    merged[-1][1] = max(merged[-1][1], end)
+                else:
+                    merged.append([start, end])
+            if len(merged) > 200:
+                raise ValueError('预览区间过多')
+            complete = len(merged) == 1 and merged[0][0] <= .25 and merged[0][1] >= duration - .25
+            s['preview'] = {'revision': expected, 'ranges': merged, 'complete': complete}
+            self.save(s)
+            return s['preview']
 
     def execute(self, job, finalizer: Finalizer) -> dict:
         with self.lock():
@@ -345,7 +391,10 @@ class Workbench:
             self.save(s)
             try:
                 with timed_stage(s,'stage'):
-                    self.uploads.stage(result.final_path, title=s["title"], description=s.get('description', ''), tags=s.get('tags', []))
+                    from bilive.media.publication import generate_default_cover
+                    s['cover_path'] = str(generate_default_cover(Path(result.final_path)))
+                    self.uploads.stage(result.final_path, title=s["title"], description=s.get('description', ''),
+                                       tags=s.get('tags', []), tid=s.get('tid'), cover_path=s['cover_path'])
             except Exception:
                 self.save(s)
                 raise

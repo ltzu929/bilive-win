@@ -242,6 +242,8 @@ def default_streamer_profile(room_id: str) -> dict[str, Any]:
         "aliases": [],
         "default_tags": [],
         "default_description": "",
+        "default_title_template": "",
+        "default_tid": None,
         "default_slice_options": {},
         "default_subtitle_style": {},
         "approved_guidance": "",
@@ -311,6 +313,8 @@ def patch_streamer_profile(
         "aliases",
         "default_tags",
         "default_description",
+        "default_title_template",
+        "default_tid",
         "default_slice_options",
         "default_subtitle_style",
         "approved_guidance",
@@ -318,6 +322,10 @@ def patch_streamer_profile(
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise ValueError(f"unknown profile fields: {', '.join(unknown)}")
+    from bilive.media.publication import validate_template, validate_metadata
+    if 'default_title_template' in payload and payload['default_title_template']:
+        validate_template(payload['default_title_template'])
+    validate_metadata('标题', payload.get('default_description', ''), payload.get('default_tags', []), payload.get('default_tid'))
 
     def mutate(state: dict[str, Any]) -> dict[str, Any]:
         profile = {**default_streamer_profile(room), **(state.get("profile") or {})}
@@ -333,6 +341,9 @@ def patch_streamer_profile(
         for key in ("default_description", "approved_guidance"):
             if key in payload:
                 profile[key] = str(payload.get(key) or "")
+        for key in ('default_title_template', 'default_tid'):
+            if key in payload:
+                profile[key] = payload[key]
         if "default_slice_options" in payload:
             profile["default_slice_options"] = _normalize_slice_options(
                 payload.get("default_slice_options")

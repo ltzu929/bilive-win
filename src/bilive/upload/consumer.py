@@ -46,7 +46,7 @@ class UploadConsumer:
             return self._status({"status":"idle"})
         path = claimed["video_path"]
         metadata = {"title":claimed["title"],"desc":claimed["description"],
-                    "tag":",".join(json.loads(claimed["tags"])),"tid":self.settings.tid}
+                    "tag":",".join(json.loads(claimed["tags"])),"tid":claimed.get('tid') or self.settings.tid}
         if not metadata["title"].strip():
             self.queue.mark_failed(path, "upload title required")
             return self._status({"status":"failed","error":"upload title required"})
@@ -75,6 +75,14 @@ class UploadConsumer:
                     raise ValueError("CDN result has no remote filename")
                 self.queue.mark_uploaded(path,remote)
             # Confirmed remote filename is reused on every publication retry.
+            cover_url = claimed.get('cover_url')
+            if claimed.get('cover_path') and not cover_url:
+                cover_url = self.client.upload_cover(claimed['cover_path'])
+                if not isinstance(cover_url, str) or not cover_url.startswith(('http://', 'https://', '//')):
+                    raise ValueError('默认封面上传未返回有效地址')
+                self.queue.save_cover_url(path, cover_url)
+            if cover_url:
+                metadata['cover'] = cover_url
             self.queue.mark_publishing(path)
             response = self.client.submit_uploaded_video(remote,metadata)
             if not isinstance(response,dict):
