@@ -14,6 +14,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from bilive.media.process import run_media_command
 from bilive.vendor.config import (
     WHISPER_BATCH_SIZE,
     WHISPER_CPU_THREADS,
@@ -149,7 +150,7 @@ def extract_audio(
     ])
     started = time.perf_counter()
     try:
-        subprocess.run(command, capture_output=True, check=True, timeout=3600)
+        run_media_command(command, capture_output=True, check=True, timeout=3600)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         shutil.rmtree(temp_dir, ignore_errors=True)
         scan_log.error(f"ffmpeg audio extraction failed: {exc}")

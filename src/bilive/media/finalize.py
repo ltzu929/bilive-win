@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from bilive.media.subtitle_store import SubtitleStore
+from bilive.media.process import run_media_command
 
 
 class PipelineError(Exception):
@@ -31,7 +31,7 @@ class FinalizeResult:
 
 
 def _run_ffmpeg(cmd: list[str], log: list[str]) -> None:
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    proc = run_media_command(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     log.append(" ".join(cmd))
     if proc.returncode != 0:
         log.append(proc.stderr[-2000:])
@@ -69,8 +69,10 @@ def ensure_raw_cut(
     _run_ffmpeg(
         [
             "ffmpeg", "-y",
-            "-i", str(source),
+            # Input seeking skips the preceding recording; accurate_seek remains
+            # enabled, so transcoding still trims at the requested frame.
             "-ss", f"{start:.3f}",
+            "-i", str(source),
             "-t", f"{end - start:.3f}",
             "-c:v", "libx264", "-preset", "fast", "-c:a", "aac",
             str(tmp),

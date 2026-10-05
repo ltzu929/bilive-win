@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from bilive.media.process import run_media_command
 
 
 class RemuxError(Exception):
@@ -24,7 +24,7 @@ class RemuxResult:
 
 
 def _ffprobe_duration(path: Path, log: list[str]) -> float:
-    proc = subprocess.run(
+    proc = run_media_command(
         [
             "ffprobe",
             "-v", "error",
@@ -48,7 +48,7 @@ def _ffprobe_duration(path: Path, log: list[str]) -> float:
 
 
 def _probe_has_av(path: Path, log: list[str]) -> None:
-    proc = subprocess.run(
+    proc = run_media_command(
         [
             "ffprobe",
             "-v", "error",
@@ -77,7 +77,7 @@ def verify_mp4(path: Path, log: list[str]) -> float:
     duration = _ffprobe_duration(path, log)
     # 首中尾解码检查
     for label, ts in (("start", 0.0), ("mid", duration / 2), ("end", max(duration - 0.2, 0.0))):
-        proc = subprocess.run(
+        proc = run_media_command(
             [
                 "ffmpeg",
                 "-v", "error",
@@ -113,7 +113,7 @@ def remux_recording(flv_path: Path, delete_source: bool = True) -> RemuxResult:
     result = RemuxResult(source_flv=str(flv_path), mp4_path=str(mp4_path))
     tmp = mp4_path.with_suffix(".partial.mp4")
 
-    proc = subprocess.run(
+    proc = run_media_command(
         [
             "ffmpeg", "-y",
             "-i", str(flv_path),

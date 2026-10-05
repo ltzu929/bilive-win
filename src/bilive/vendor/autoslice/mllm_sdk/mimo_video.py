@@ -4,7 +4,6 @@ import base64
 import json
 import math
 import os
-import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from typing import Any, Callable
 
 from openai import OpenAI
 
+from bilive.media.process import run_media_command
 from bilive.vendor.autoslice.analysis_result import AnalysisResult, TrimSuggestion
 from bilive.vendor.config import (
     MIMO_BASE_URL,
@@ -83,7 +83,7 @@ def encode_video_for_mimo(
     video_path: str | Path,
     *,
     max_base64_bytes: int = MIMO_MAX_BASE64_BYTES,
-    run: RunCommand = subprocess.run,
+    run: RunCommand = run_media_command,
     temporary_directory=tempfile.TemporaryDirectory,
     semaphore=None,
 ) -> EncodedMimoVideo:

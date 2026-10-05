@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import traceback
+from datetime import datetime, timezone
 
 
 def main():
@@ -15,7 +16,7 @@ def main():
         log_dir / f"{script.stem}.err.log"
     ).open("ab") as stderr:
         try:
-            return subprocess.run(
+            process = subprocess.Popen(
                 [str(shell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                  "-File", str(script)],
                 cwd=script.parent,
@@ -23,7 +24,17 @@ def main():
                 stdout=stdout,
                 stderr=stderr,
                 creationflags=subprocess.CREATE_NO_WINDOW,
-            ).returncode
+            )
+            stderr.write(
+                f"{datetime.now(timezone.utc).isoformat()} task_start script={script.name} pid={process.pid}\n".encode("utf-8")
+            )
+            stderr.flush()
+            result = process.wait()
+            stderr.write(
+                f"{datetime.now(timezone.utc).isoformat()} task_exit script={script.name} pid={process.pid} code={result}\n".encode("utf-8")
+            )
+            stderr.flush()
+            return result
         except Exception:
             stderr.write(traceback.format_exc().encode("utf-8"))
             return 1
