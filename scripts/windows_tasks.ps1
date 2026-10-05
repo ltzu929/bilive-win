@@ -7,7 +7,7 @@ function Get-BiliveTaskPlan {
         @(@{Name='BiliveV2Recorder';Script='start_windows_recorder.ps1';Venv='.venv-recorder';Trigger='Logon'},
           @{Name='BiliveV2Dashboard';Script='start_windows_dashboard.ps1';Venv='.venv-win';Trigger='Logon'})
     } else {
-        @(@{Name='BiliveV2Retention';Script='start_recording_retention.ps1';Venv='.venv-win';Trigger='Daily';At='03:00'})
+        @(@{Name='BiliveV2Retention';Script='start_recording_retention.ps1';Venv='.venv-win';Trigger='Daily';At='08:30'})
     }
     foreach ($Entry in $Entries) {
         $ScriptPath = Join-Path $ProjectDir $Entry.Script
@@ -59,9 +59,14 @@ function Register-BiliveTaskPlan {
         if ($ExistingTasks.ContainsKey($Item.TaskName)) {
             $Saved = $ExistingTasks[$Item.TaskName]
             # Updating a known legacy action affects future launches only.
-            # Keep the current service, triggers, settings and principal intact.
+            # Keep the current service, settings and principal intact.
             if (-not $Saved.Matches) {
                 Set-ScheduledTask -TaskName $Item.TaskName -TaskPath $Item.TaskPath -Action $Action
+            }
+            if ($Item.Trigger -eq 'Daily') {
+                # Reinstalling retention must apply its revised schedule too.
+                $Trigger = New-ScheduledTaskTrigger -Daily -At $Item.At
+                Set-ScheduledTask -TaskName $Item.TaskName -TaskPath $Item.TaskPath -Trigger $Trigger
             }
             continue
         }
