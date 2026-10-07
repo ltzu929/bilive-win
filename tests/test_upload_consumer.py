@@ -65,6 +65,7 @@ def test_configured_category_reaches_upload_and_publication(setup):
     q.activate(str(p))
     assert worker.process_one()['status'] == 'published'
     assert len(metadata) == 2 and all(v['tid'] == 19 for v in metadata)
+    assert all(v['copyright'] == 1 for v in metadata)
 
 
 def test_segment_category_cover_and_retry_are_preserved(setup):
@@ -148,6 +149,7 @@ def test_submission_source_uses_matching_segment_without_reupload(setup, tmp_pat
     assert worker.process_one()['status'] == 'published'
     assert metadata[0][0] == 'existing-remote'
     assert metadata[0][1]['source'] == 'https://live.bilibili.com/24393'
+    assert metadata[0][1]['copyright'] == 1
     assert counts['upload'] == 0
 
 

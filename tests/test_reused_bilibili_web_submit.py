@@ -63,8 +63,8 @@ def test_submit_uploaded_video_uses_web_add_v3_json():
             "desc": "clip description",
         }
     ]
-    assert request["json"]["copyright"] == 2
-    assert request["json"]["source"] == "https://live.bilibili.com/8792912"
+    assert request["json"]["copyright"] == 1
+    assert request["json"]["source"] == ""
     assert request["json"]["subtitle"] == {"open": 0, "lan": ""}
 
 
@@ -95,5 +95,24 @@ def test_repost_without_source_rejected_before_http():
     session = FakeSession(FakeResponse({'code': 0}))
     client = BilibiliWebClient(session=session, csrf='csrf-token')
     with pytest.raises(ValueError, match='缺少来源地址'):
-        client.submit_uploaded_video('remote-filename', {'title': 'clip', 'tid': 138, 'tag': '直播切片'})
+        client.submit_uploaded_video('remote-filename', {'title': 'clip', 'tid': 138, 'tag': '直播切片', 'copyright': 2})
     assert session.calls == []
+
+
+def test_original_without_repost_source_submits():
+    session = FakeSession(FakeResponse({'code': 0}))
+    client = BilibiliWebClient(session=session, csrf='csrf-token')
+    client.submit_uploaded_video('remote-filename', {'title': 'clip', 'tid': 138})
+    assert session.calls[0][1]['json']['copyright'] == 1
+    assert session.calls[0][1]['json']['source'] == ''
+
+
+def test_explicit_repost_preserves_source():
+    session = FakeSession(FakeResponse({'code': 0}))
+    client = BilibiliWebClient(session=session, csrf='csrf-token')
+    client.submit_uploaded_video('remote-filename', {
+        'title': 'clip', 'tid': 138, 'copyright': 2,
+        'source': 'https://live.bilibili.com/24393',
+    })
+    assert session.calls[0][1]['json']['copyright'] == 2
+    assert session.calls[0][1]['json']['source'] == 'https://live.bilibili.com/24393'

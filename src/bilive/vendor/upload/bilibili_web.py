@@ -34,10 +34,14 @@ class BilibiliWebClient:
             raise ValueError("remote filename is required")
 
         desc = str(metadata.get("desc") or "")
-        copyright = int(metadata.get('copyright', 2))
+        copyright = int(metadata.get('copyright', 1))
+        if copyright not in (1, 2):
+            raise ValueError('投稿类型必须为自制或转载')
         source = str(metadata.get('source') or '').strip()
         if copyright == 2 and not source:
             raise ValueError('转载投稿缺少来源地址，请先核对录播来源')
+        if copyright == 1:
+            source = ''
         payload = {
             "copyright": copyright,
             "source": source,

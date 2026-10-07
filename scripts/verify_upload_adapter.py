@@ -46,8 +46,8 @@ def main():
             assert url == 'https://member.bilibili.com/x/vu/web/add/v3'
             assert kwargs['json']['videos'][0]['filename'] == 'qa-remote'
             assert kwargs['json']['title'] == '隔离协议验收'
-            assert kwargs['json']['copyright'] == 2
-            assert kwargs['json']['source'] == 'https://live.bilibili.com/123'
+            assert kwargs['json']['copyright'] == 1
+            assert kwargs['json']['source'] == ''
             assert kwargs['json']['cover'] == 'https://example.test/isolated-cover.jpg'
             calls['posts'] += 1
             if calls['posts'] == 1:
@@ -98,7 +98,7 @@ def main():
             assert 'isolated-cookie' not in config.read_text(encoding='utf-8')
             assert 'isolated-csrf' not in config.read_text(encoding='utf-8')
             assert queue.get_by_path(str(video))['bvid'] == 'BVisolated'
-            print('UPLOAD_ADAPTER_PASS installed pinned bilitool controller + runtime Cookie injection + source + cover + publication retry without reupload + durable published queue; network mocked')
+            print('UPLOAD_ADAPTER_PASS installed pinned bilitool controller + runtime Cookie injection + original publication (copyright=1, empty source) + cover + publication retry without reupload + durable published queue; network mocked')
         finally:
             if previous is None:os.environ.pop('BILITOOL_CONFIG_PATH',None)
             else:os.environ['BILITOOL_CONFIG_PATH']=previous
