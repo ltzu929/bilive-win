@@ -14,7 +14,11 @@ const review = {
   largePlayer: false,
   pickerCollapsed: false,
 };
-const recordingPicker = { query: "", up: "", from: "", to: "", group: "date", sort: "newest", offset: 0 };
+const recordingPicker = { query: "", up: "", from: "", to: "", group: "date", sort: "newest", offset: 0, scrollTop: 0 };
+function captureRecordingPickerScroll() {
+  const list = document.getElementById("recording-results");
+  if (list) recordingPicker.scrollTop = list.scrollTop;
+}
 function recordingMeta(recording) {
   const path = recording.source_relpath.replaceAll("\\", "/");
   const parts = path.split("/"), name = parts.at(-1);
@@ -55,9 +59,10 @@ function recordingPickerHTML() {
     <button class="btn btn-secondary btn-sm" id="recording-reset">清除筛选</button></div>
     <p class="hint">录制时间来自文件名；无法识别的时间单独显示为未知。</p><div id="recording-results" class="recording-results"></div><div class="recording-pagination"><button id="recording-prev" class="btn btn-secondary btn-sm">上一页场次</button><span id="recording-count" role="status"></span><button id="recording-next" class="btn btn-secondary btn-sm">下一页场次</button></div>`;
 }
-function drawRecordingResults() {
+function drawRecordingResults(scrollTop = 0) {
   const host = document.getElementById("recording-results");
   if (!host) return;
+  recordingPicker.scrollTop = scrollTop;
   if (recordingPicker.from && recordingPicker.to && recordingPicker.from > recordingPicker.to) {
     host.innerHTML = emptyState("开始日期不能晚于结束日期");
     setMessage("recording-count", "请调整日期范围");
@@ -100,6 +105,7 @@ function drawRecordingResults() {
     const selected = r.task_id === review.task?.task_id;
     return `${heading}<button class="recording-option ${selected?"selected":""}" data-recording="${htmlEscape(r.task_id)}" aria-pressed="${selected}"><span class="recording-option-title"><strong>${htmlEscape(r.upName)}</strong><span>${htmlEscape(r.date ? `${r.date} ${r.time}` : "录制时间未知")}</span>${selected?statusBadge("当前场次","blue"):""}</span><span class="recording-file" title="${htmlEscape(r.source_relpath)}">${htmlEscape(r.name)}</span><span class="recording-meta">${htmlEscape(r.room?`房间 ${r.room} · `:"")}${bytesLabel(r.size)}</span></button>`;
   }).join("") || emptyState("没有符合条件的场次，请调整或清除筛选");
+  host.scrollTop = scrollTop;
   setMessage("recording-count", `筛选 ${items.length} / 全部 ${review.recordings.length} 场${items.length?` · ${recordingPicker.offset+1}–${recordingPicker.offset+visible.length}`:""}`);
   document.getElementById("recording-prev").disabled = recordingPicker.offset === 0;
   document.getElementById("recording-next").disabled = recordingPicker.offset+20 >= items.length;
@@ -131,7 +137,7 @@ function bindRecordingPicker() {
   };
   document.getElementById("recording-prev").onclick = () => { recordingPicker.offset -= 20; drawRecordingResults(); };
   document.getElementById("recording-next").onclick = () => { recordingPicker.offset += 20; drawRecordingResults(); };
-  drawRecordingResults();
+  drawRecordingResults(recordingPicker.scrollTop);
 }
 const bytesLabel = (n) =>
   Number.isFinite(n)
@@ -290,6 +296,7 @@ async function renderManualWorkbench() {
   clearTimeout(reviewTimer);
   clearTimeout(analysisTimer);
   capturePlayback();
+  captureRecordingPickerScroll();
   const current = beginPage("library");
   document.getElementById("main").innerHTML =
     pageHead("录播库") + emptyState("正在读取本机录播…");
@@ -307,7 +314,7 @@ async function renderManualWorkbench() {
     const ordered = sortedRecordings(all.map(recordingMeta), "newest");
     const scoped = room ? ordered.filter(r => r.room === room) : ordered;
     if (newLink && room) {
-      Object.assign(recordingPicker, { query: "", up: room, from: "", to: "", offset: 0 });
+      Object.assign(recordingPicker, { query: "", up: room, from: "", to: "", offset: 0, scrollTop: 0 });
     }
     if (sourceLink && newLink) {
       selected = ordered.find(r => r.task_id === sourceLink);
@@ -707,6 +714,7 @@ function reviewMarkup(s, task, lines, initial) {
   );
 }
 function drawManualWorkbench() {
+  captureRecordingPickerScroll();
   const main = document.getElementById("main");
   const s = review.segment,
     task = review.task;
