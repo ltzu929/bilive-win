@@ -93,12 +93,16 @@ class AnalysisPipeline:
             if (not isinstance(value.get('text'), str) or isinstance(value.get('start'), bool)
                     or isinstance(value.get('end'), bool)):
                 raise PipelineError('invalid ASR cue')
+            a, b = float(value['start']), float(value['end'])
+            if (not all(math.isfinite(t) for t in (a, b))
+                    or not 0 <= a < b <= end-start+0.01 or a >= end-start):
+                raise ValueError('invalid ASR timestamps')
             text = value['text'].strip()
             # Whisper/normalization can leave blank cues amongst valid speech.
             # They are not subtitle rows and must not invalidate the whole draft.
             if not text:
                 continue
-            lines.append(SubtitleLine(len(lines)+1, float(value['start']), float(value['end']), text))
+            lines.append(SubtitleLine(len(lines)+1, a, b, text))
         if not lines:
             raise PipelineError('本地模型没有返回有效字幕，请重试或试听后手工添加字幕')
         clamp_subtitle_times(lines, end-start)

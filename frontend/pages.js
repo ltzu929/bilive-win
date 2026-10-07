@@ -281,7 +281,7 @@ function drawNativeRooms() {
           return `<tr data-room-select="${roomId(r)}" class="${roomId(r) === view.selected ? "selected" : ""}"><td><div class="video-cell"><div class="thumb">${roomCoverHTML(r)}</div><div><h3 title="${htmlEscape(roomName(r))}">${htmlEscape(roomName(r))}</h3><p title="${htmlEscape(info.title || "暂无直播标题")}">${htmlEscape(info.title || "暂无直播标题")}</p><small title="房间 ${roomId(r)}">房间 ${roomId(r)}</small></div></div></td><td><span class="live-state ${live ? "text-red" : "muted"}"><i></i>${live ? "直播中" : info.live_status == null ? "状态未知" : "未开播"}</span></td><td>${statusBadge(!s.recorder_enabled ? "自动录制关闭" : recordingLabels[s.running_status] || "状态未知", s.running_status === "recording" && s.recorder_enabled ? "blue" : "muted")}</td><td class="num">${recordedTime(s.rec_elapsed)}</td><td><button class="text-button">查看</button></td></tr>`;
         })
         .join("") ||
-      '<tr><td colspan="5">没有配置直播间，请添加房间。</td></tr>'
+      '<tr><td colspan="5">录制器当前没有加载直播间。可刷新列表；若已有房间配置，请检查录制器启动是否成功。</td></tr>'
     }</tbody></table></div><div class="pagination"><span>第 ${view.page} 页</span><div class="pager-buttons"><button id="rooms-prev" class="icon-button" aria-label="上一页" ${view.page === 1 ? "disabled" : ""}>${icon("chevron-left")}</button><button id="rooms-next" class="icon-button" aria-label="下一页" ${view.items.length < view.size ? "disabled" : ""}>${icon("chevron-right")}</button></div></div><p class="hint bottom-hint">${icon("info-circle")}关闭网页不影响后台录制，录制任务将继续在后台进行。</p></section><aside class="detail-panel">${row ? liveDetail(row) : emptyState("选择直播间查看详情")}<p id="room-message" role="status"></p></aside></div>` +
     dialogHTML(
       "room-dialog",

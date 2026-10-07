@@ -65,6 +65,24 @@ def test_nonempty_invalid_cue_still_fails(monkeypatch):
         p.transcribe_segment(SimpleNamespace(target='sample', payload={'revision': 1}))
 
 
+@pytest.mark.parametrize('formal', [False, True], ids=['manual', 'formal'])
+@pytest.mark.parametrize('start,end', [
+    (float('nan'), 1), (0, float('inf')), (-0.1, 1), (2, 1), (0, 5),
+], ids=['nonfinite-start', 'nonfinite-end', 'negative', 'reversed', 'out-of-range'])
+def test_invalid_blank_cues_still_fail_before_being_skipped(monkeypatch, formal, start, end):
+    transcript = {'segments': [
+        {'start': 0, 'end': 1, 'text': '有效字幕'},
+        {'start': start, 'end': end, 'text': '   '},
+    ]}
+    p = pipeline(monkeypatch, transcript)
+    with pytest.raises((ValueError, PipelineError)):
+        if formal:
+            p._formal_subtitles('sample.mp4', 'sample', 0, 4, 4,
+                SimpleNamespace(start=0, end=4), transcript)
+        else:
+            p.transcribe_segment(SimpleNamespace(target='sample', payload={'revision': 1}))
+
+
 def test_auxiliary_asr_with_blank_cues_remains_reusable(monkeypatch, tmp_path):
     transcript = {'segments': cues(), 'transcript': '第一句第二句'}
     p = pipeline(monkeypatch, transcript)
