@@ -8,6 +8,7 @@ const PAGES = {
 };
 function route() {
   clearTimeout(reviewTimer);
+  clearTimeout(analysisTimer);
   clearTimeout(roomTimer);
   if (!location.hash) {
     location.hash = "#/library";

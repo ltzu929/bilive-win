@@ -3065,3 +3065,31 @@ dialog header {
   .profile-layout { grid-template-columns: 160px minmax(0, 1fr); }
   .page-streamer .review-split { grid-template-columns: 1fr; }
 }
+.recording-analysis {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 14px 18px;
+  border: 1px solid var(--border, #dce4ef);
+  border-left: 4px solid #8592a8;
+  border-radius: 6px;
+  background: #f7f9fc;
+}
+.recording-analysis strong { display: block; }
+.recording-analysis p { margin: 6px 0 0; font-size: 14px; line-height: 1.6; }
+.recording-analysis.analysis-busy { border-left-color: #1677ff; background: #f0f6ff; }
+.recording-analysis.analysis-success { border-left-color: #209b65; }
+.recording-analysis.analysis-warning { border-left-color: #d48806; background: #fff9ed; }
+.recording-analysis.analysis-error { border-left-color: #d9363e; background: #fff2f0; }
+.analysis-busy strong::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 9px;
+  border: 2px solid #b8d7ff;
+  border-top-color: #1677ff;
+  border-radius: 50%;
+  animation: analysis-spin 1s linear infinite;
+}
+@keyframes analysis-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .analysis-busy strong::before { animation: none; } }

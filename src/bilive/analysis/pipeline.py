@@ -93,9 +93,14 @@ class AnalysisPipeline:
             if (not isinstance(value.get('text'), str) or isinstance(value.get('start'), bool)
                     or isinstance(value.get('end'), bool)):
                 raise PipelineError('invalid ASR cue')
-            lines.append(SubtitleLine(len(lines)+1, float(value['start']), float(value['end']), value['text'].strip()))
+            text = value['text'].strip()
+            # Whisper/normalization can leave blank cues amongst valid speech.
+            # They are not subtitle rows and must not invalidate the whole draft.
+            if not text:
+                continue
+            lines.append(SubtitleLine(len(lines)+1, float(value['start']), float(value['end']), text))
         if not lines:
-            raise PipelineError('当前片段未识别到语音，可试听后手工添加字幕')
+            raise PipelineError('本地模型没有返回有效字幕，请重试或试听后手工添加字幕')
         clamp_subtitle_times(lines, end-start)
         with wb.lock():
             wb.check_revision(wb.load(job.target), job.payload['revision'])
@@ -174,8 +179,8 @@ class AnalysisPipeline:
                     with timed_stage(entry,'auxiliary_asr'), self.asr_lock:
                         transcript = self.transcribe(candidate)
                     segments = transcript.get('segments', [])
-                    if transcript.get('error') or not segments or any(
-                            not isinstance(v.get('text'),str) or not v['text'].strip()
+                    if transcript.get('error') or not any(isinstance(v.get('text'),str) and v['text'].strip() for v in segments) or any(
+                            not isinstance(v.get('text'),str)
                             or not all(math.isfinite(float(v[k])) for k in ('start','end'))
                             or not 0 <= float(v['start']) < float(v['end']) <= event.end-event.start+0.01
                             for v in segments):
@@ -371,11 +376,13 @@ class AnalysisPipeline:
                                            tid=s['tid'],cover_path=s['cover_path'])
             s.update(state="awaiting_publish",final_path=final.final_path,final_revision=1,processing_stage='completed')
         except Exception as exc:
-            s.update(state="needs_review", processing_error=type(exc).__name__)
+            from bilive.config.secrets import redact
+            s.update(state="needs_review", processing_error=type(exc).__name__, processing_error_detail=redact(str(exc)))
             entry["state"] = "review"
         self.workbench.save(s)
         self._save_history(sidecar,{**asdict(result),'alignment':s.get('alignment'),
             'processing_stage':s.get('processing_stage'),'processing_error':s.get('processing_error'),
+            'processing_error_detail':s.get('processing_error_detail'),
             'timings':s.get('timings',{}),
             'duplicate_of':s.get('duplicate_of'),'duplicate_reason':s.get('duplicate_reason')})
 
@@ -401,15 +408,19 @@ class AnalysisPipeline:
                 transcript = self.transcribe(padded)
             origin, window_duration = window_start, window_end-window_start
         segments = []
+        if transcript.get('error'):
+            raise PipelineError(f"本地字幕识别失败：{transcript['error']}")
         for value in transcript.get('segments', []):
             if not isinstance(value.get('text'),str) or isinstance(value.get('start'),bool) or isinstance(value.get('end'),bool):
                 raise PipelineError('invalid formal ASR cue')
             a,b,text = float(value['start']),float(value['end']),str(value['text']).strip()
-            if not all(math.isfinite(t) for t in (a,b)) or a < 0 or b <= a or b > window_duration+0.01 or not text:
+            if not all(math.isfinite(t) for t in (a,b)) or a < 0 or b <= a or b > window_duration+0.01:
                 raise PipelineError('invalid formal ASR timestamps')
+            if not text:
+                continue
             segments.append(TranscriptSegment(origin+a,origin+min(b,window_duration),text))
         if not segments:
-            raise PipelineError('formal ASR returned no timestamps')
+            raise PipelineError('本地模型没有返回有效字幕，请重试或试听后手工添加字幕')
         snapped = TrimSuggestion(start,end,'selected source range')
         if self.settings.subtitle.snap_enabled:
             snapped = snap_trim_to_segments(snapped,segments,max(0.0,float(self.settings.subtitle.snap_tolerance)))

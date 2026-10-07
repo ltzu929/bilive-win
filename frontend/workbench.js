@@ -288,6 +288,7 @@ function capturePlayback() {
 }
 async function renderManualWorkbench() {
   clearTimeout(reviewTimer);
+  clearTimeout(analysisTimer);
   capturePlayback();
   const current = beginPage("library");
   document.getElementById("main").innerHTML =
@@ -349,6 +350,7 @@ async function renderManualWorkbench() {
       recordings: all,
       total: all.length,
       segments,
+      analysisSegments: segments,
       analysisJob,
       evidence,
       lifecycle,
@@ -376,8 +378,9 @@ function updateReviewActions() {
     const next = document.getElementById("review-next-step");
     if (next) { next.disabled = true; next.hidden = true; }
     const evidence = review.evidence;
-    setMessage("context-state", review.analysisJob ? `分析${reviewJobStates[review.analysisJob.status] || review.analysisJob.status}` : evidence?.history_available ? `分析记录：${evidence.status}` : "尚无分析记录");
-    setMessage("context-save", evidence?.error || evidence?.skip_reason || "可手动分析本场录播，或补选源范围创建人工片段。");
+    const analysis = recordingAnalysisState();
+    setMessage("context-state", analysis.title);
+    setMessage("context-save", analysis.detail);
     const supplement = document.querySelector(".context-range .btn");
     if (supplement) supplement.className = "btn btn-primary";
     const badge = document.getElementById("review-draft-badge");
@@ -456,6 +459,89 @@ function updateReviewActions() {
 
 function candidateNeedsReview(s) {
   return !s.human_reviewed && !s.publish_approval && s.state !== "dropped";
+}
+
+let analysisTimer;
+function recordingAnalysisState(job = review.analysisJob, evidence = review.evidence, segments = review.analysisSegments || review.segments) {
+  const e = evidence || {}, total = e.total || 0;
+  // Older running API processes do not yet return summary. Only count a complete page.
+  const summary = e.summary || (e.candidates?.length === total ? {
+    completed: e.candidates.filter(c => c.state !== "processing").length,
+    dropped: e.candidates.filter(c => c.state === "drop").length,
+    failed: e.candidates.filter(c => c.state === "failed" || c.judgments?.some(j => j.judge_status === "judge_failed")).length,
+    needs_review: e.candidates.filter(c => c.state === "review").length,
+  } : {});
+  const status = job?.status || e.status;
+  const count = segments.filter(s => s.state !== "dropped").length;
+  const stageFailures = (e.segments || []).filter(s => s.error || Object.values(s.timings || {}).some(t => t.status === "failed")).length;
+  const elapsed = status === "processing" && job?.progress?.started_at
+    ? Math.max(0, Date.now() / 1000 - job.progress.started_at) : job?.progress?.elapsed_seconds;
+  const timing = Number.isFinite(elapsed) ? ` · 已用 ${timecode(Math.floor(elapsed))}` : "";
+  if (review.analysisSubmitting) return {title: "正在提交 AI 分析…", detail: "正在为本场录播创建分析任务。", tone: "busy", empty: "分析请求正在提交，请稍候。"};
+  if (status === "pending") return {title: "AI 分析已排队", detail: `等待后台处理服务开始分析${job?.progress?.reason ? "：" + job.progress.reason : "。准备分析环境或处理其他任务可能需要等待。"}`, tone: "busy", empty: "分析任务已提交，尚未开始处理；这里还不是分析结果。"};
+  if (status === "processing") return {title: `AI 正在分析${timing}`, detail: total
+    ? `已召回 ${total} 个候选区间${Number.isInteger(summary.completed) ? `，已处理 ${summary.completed} / ${total} 个` : ""}。正在进行视频准备、AI 判断或字幕成片，完成后会自动更新。`
+    : "正在读取录播、召回候选或准备分析。完成后会自动更新。", tone: "busy", empty: "AI 分析尚未结束，暂未生成待审核片段，请等待结果。"};
+  if (job?.result?.cancelled || e.skipped) return {title: job?.result?.cancelled ? "AI 分析已取消" : "本场分析已跳过", detail: e.skip_reason === "below min_source_size_mb" ? "源文件小于配置的分析门槛，未进行 AI 判断。可手动补选片段。" : "本场未完成 AI 分析，可重新提交或手动补选片段。", tone: "muted", empty: "尚无待审核片段，可重新分析或手动补选。"};
+  if (status === "failed") return {title: "AI 分析失败", detail: `${job?.result?.error || e.error || "处理未能完成，请查看分析证据。"} 可重试或手动补选片段。`, tone: "error", empty: "分析失败，不能据此判断本场没有值得切的片段。"};
+  if (status === "done") {
+    if (summary.failed || summary.needs_review || stageFailures) return {title: "AI 分析结束，仍需人工检查", detail: `当前 ${count} 个待审核片段；${summary.failed || 0} 个候选处理失败，${summary.needs_review || 0} 个候选需人工检查${stageFailures ? `，${stageFailures} 个片段在字幕 / 成片阶段失败` : ""}${timing}。查看分析证据或手动补选。`, tone: "warning", empty: "部分候选或片段未能完成处理，不能据此判断本场没有值得切的片段。"};
+    if (!total) return {title: "分析完成，未召回候选区间", detail: `弹幕召回没有找到候选区间${timing}。可手动补选片段；这不代表 AI 看完了整场并判定无可保留内容。`, tone: "muted", empty: "本次未召回候选区间，可手动补选源区间创建片段。"};
+    if (summary.dropped === total) return {title: "分析完成，AI 未建议保留片段", detail: `已检查 ${total} 个召回区间，AI 均建议不保留${timing}。仍可查看分析证据并手动补选。`, tone: "muted", empty: "本次召回的候选均被 AI 建议不保留，可人工检查或补选。"};
+    return {title: `AI 分析完成 · ${count} 个片段可审核`, detail: `已处理 ${total} 个召回区间${timing}。请选择片段检查内容、字幕和成片。`, tone: "success", empty: "分析已结束，当前没有可审核片段。可查看分析证据或手动补选。"};
+  }
+  return {title: "本场尚未进行 AI 分析", detail: "点击“AI 分析本场录播”开始，也可手动补选源区间创建片段。", tone: "muted", empty: "尚未分析。可点击“AI 分析本场录播”，或手动补选片段。"};
+}
+function updateRecordingAnalysis(message = "") {
+  const state = recordingAnalysisState();
+  const banner = document.getElementById("recording-analysis");
+  if (!banner) return;
+  banner.className = `recording-analysis analysis-${state.tone}`;
+  banner.setAttribute("aria-busy", String(state.tone === "busy"));
+  setMessage("analysis-title", state.title);
+  setMessage("analysis-detail", message || state.detail);
+  setMessage("candidate-empty", state.empty);
+  if (!review.segment) {
+    setMessage("context-state", state.title);
+    setMessage("context-save", message || state.detail);
+  }
+  for (const id of ["review-analyze", "review-analyze-now"]) {
+    const button = document.getElementById(id);
+    if (!button) continue;
+    button.disabled = !!(review.analysisSubmitting || review.lifecycle?.review_result || ["pending", "processing"].includes(review.analysisJob?.status));
+    button.textContent = review.analysisSubmitting ? "正在提交…" : review.analysisJob?.status === "pending" ? "AI 分析已排队" : review.analysisJob?.status === "processing" ? "AI 正在分析…" : review.analysisJob?.status === "failed" ? "重试 AI 分析" : "AI 分析本场录播";
+  }
+}
+function analysisInputSnapshot() {
+  return ["review-start", "review-end", "review-title", "review-note"].map(id => document.getElementById(id)?.value || "").join("\n");
+}
+async function watchRecordingAnalysis(taskId, epoch) {
+  const current = () => pageKey() === "library" && pageEpoch === epoch && review.task?.task_id === taskId;
+  if (!current()) return;
+  try {
+    const [data, evidence] = await Promise.all([
+      reviewAPI(`/api/recordings/${taskId}/segments`),
+      reviewAPI(`/api/recordings/${taskId}/evidence?limit=20&offset=${review.evidenceOffset}`),
+    ]);
+    if (!current()) return;
+    review.analysisJob = data.analysis_job;
+    review.analysisSegments = data.items;
+    review.evidence = evidence;
+    const ended = !["pending", "processing"].includes(data.analysis_job?.status);
+    const editing = review.unsaved || review.styleUnsaved || review.metadataUnsaved || analysisInputSnapshot() !== review.analysisInputs || document.querySelector("dialog[open]");
+    // Poll only status while working. Rebuild at completion only when no draft is being edited.
+    if (ended && !editing && !review.segment?.active_job) {
+      review.analysisPlaybackTask = taskId;
+      await renderManualWorkbench();
+      return;
+    }
+    updateRecordingAnalysis(ended ? "分析已结束。当前播放和编辑已保留；保存草稿后点击“刷新场次”查看最新片段。" : "");
+    if (!ended) analysisTimer = setTimeout(() => watchRecordingAnalysis(taskId, epoch), 2000);
+  } catch (e) {
+    if (!current()) return;
+    updateRecordingAnalysis(`状态暂时无法更新：${e.message}。已提交任务仍保留，正在重新查询。`);
+    analysisTimer = setTimeout(() => watchRecordingAnalysis(taskId, epoch), 4000);
+  }
 }
 
 /* Move existing controls into the shared-player layout without duplicating editors. */
@@ -550,7 +636,7 @@ function arrangeReviewWorkbench() {
 function reviewEvidenceHTML() {
   const e = review.evidence;
   if (!e) return '<p class="muted">暂无分析证据</p>';
-  return `<details id="recording-evidence" ${review.evidenceOpen ? "open" : ""}><summary>分析证据与占用 · 源 ${bytesLabel(e.source_size)} · 本场 ${bytesLabel(e.related_files_size)}</summary><p>分析记录：${htmlEscape(e.history_available ? e.status : "尚无")} ${htmlEscape(e.error || e.skip_reason || "")}</p><table class="list"><thead><tr><th>候选源区间</th><th>弹幕数 / 峰值 / 突增倍数</th><th>阶段 / 失败</th></tr></thead><tbody>${e.candidates.map((c, i) => `<tr><td><button class="text-button" data-candidate-seek="${i}">${timecode(c.start)}–${timecode(c.end)}</button></td><td>${htmlEscape(c.danmaku_count ?? "—")} / ${htmlEscape(c.peak_density ?? "—")} / ${htmlEscape(c.burst_ratio ?? "—")}</td><td>${htmlEscape(c.state)} ${htmlEscape(c.reason || c.error || "")}<p>${stageTimings(c.timings)}</p></td></tr>`).join("") || '<tr><td colspan="3">没有已保存候选</td></tr>'}</tbody></table><div class="action-row"><button class="btn btn-secondary btn-sm" id="evidence-prev" ${review.evidenceOffset === 0 ? "disabled" : ""}>上一页候选</button><span>共 ${e.total} 个</span><button class="btn btn-secondary btn-sm" id="evidence-next" ${review.evidenceOffset + 20 >= e.total ? "disabled" : ""}>下一页候选</button></div>${e.segments.map((v) => `<details><summary>${htmlEscape(v.title)} · ${htmlEscape(v.stage || v.state)} ${htmlEscape(v.error || "")}</summary><p>${stageTimings(v.timings)}</p><ul>${v.artifacts.map((a) => `<li>${htmlEscape(a.name)} · ${bytesLabel(a.size)}</li>`).join("") || "<li>尚无片段工件</li>"}</ul></details>`).join("")}</details>`;
+  return `<details id="recording-evidence" ${review.evidenceOpen ? "open" : ""}><summary>分析证据与占用 · 源 ${bytesLabel(e.source_size)} · 本场 ${bytesLabel(e.related_files_size)}</summary><p>分析记录：${htmlEscape(e.history_available ? e.status : "尚无")} ${htmlEscape(e.error || e.skip_reason || "")}</p><table class="list"><thead><tr><th>候选源区间</th><th>弹幕数 / 峰值 / 突增倍数</th><th>阶段 / 失败</th></tr></thead><tbody>${e.candidates.map((c, i) => `<tr><td><button class="text-button" data-candidate-seek="${i}">${timecode(c.start)}–${timecode(c.end)}</button></td><td>${htmlEscape(c.danmaku_count ?? "—")} / ${htmlEscape(c.peak_density ?? "—")} / ${htmlEscape(c.burst_ratio ?? "—")}</td><td>${htmlEscape(c.state)} ${htmlEscape(c.reason || c.error || "")}<p>${stageTimings(c.timings)}</p></td></tr>`).join("") || '<tr><td colspan="3">没有已保存候选</td></tr>'}</tbody></table><div class="action-row"><button class="btn btn-secondary btn-sm" id="evidence-prev" ${review.evidenceOffset === 0 ? "disabled" : ""}>上一页候选</button><span>共 ${e.total} 个</span><button class="btn btn-secondary btn-sm" id="evidence-next" ${review.evidenceOffset + 20 >= e.total ? "disabled" : ""}>下一页候选</button></div>${e.segments.map((v) => `<details><summary>${htmlEscape(v.title)} · ${htmlEscape(v.stage || v.state)} ${htmlEscape(v.error_detail || v.error || "")}</summary><p>${stageTimings(v.timings)}</p><ul>${v.artifacts.map((a) => `<li>${htmlEscape(a.name)} · ${bytesLabel(a.size)}</li>`).join("") || "<li>尚无片段工件</li>"}</ul></details>`).join("")}</details>`;
 }
 function reviewMarkup(s, task, lines, initial) {
   const name = task ? sourceTitle(task.source_relpath) : "选择场次";
@@ -579,7 +665,7 @@ function reviewMarkup(s, task, lines, initial) {
       ])}<div class="action-row"><button class="btn btn-secondary" data-dialog="points-dialog">编辑片段范围</button>${s.candidate_path ? '<button id="review-rejudge" class="btn btn-secondary">重新判断原候选</button>' : ""}</div>${s.latest_rejudgment ? `<details open><summary>最近重新判断结果</summary>${s.latest_rejudgment.results.map((r, i) => `<p>${htmlEscape(r.title)} · ${htmlEscape(r.judge_status)} · ${htmlEscape(r.quality_reason || r.judge_error)} ${r.suggested_trim ? `<button class="text-button" data-rejudge-range="${i}">将建议填入范围草稿</button>` : ""}</p>`).join("") || "<p>没有返回片段，仍需人工复核。</p>"}</details>` : ""}<details><summary>当前片段字幕样式</summary><div class="action-row"><a class="btn btn-secondary" href="#/settings?tab=subtitles">调整全局字幕设置</a><button id="review-style-default" class="btn btn-secondary">应用默认样式并使旧成片失效</button></div><p class="hint">应用后需要重新生成成片；也可在下方单独覆盖本片段样式。</p><label class="field">字幕样式 JSON<textarea id="review-style">${htmlEscape(JSON.stringify(s.subtitle_style || {}, null, 2))}</textarea></label><button id="review-style-save" class="btn btn-secondary">保存样式并使旧成片失效</button></details>`
     : "<p>先选定源范围并创建人工片段。</p>";
   return (
-    header +
+    header + '<section id="recording-analysis" class="recording-analysis" role="status" aria-live="polite"><strong id="analysis-title"></strong><p id="analysis-detail"></p></section>' +
     `<div class="workbench-grid card ${review.largePlayer ? "large-player" : ""}"><section class="player-column"><div class="player-toolbar">${tabsHTML(
       [
         ["source", "源录播"],
@@ -596,7 +682,7 @@ function reviewMarkup(s, task, lines, initial) {
       review.tab,
       "data-review-tab",
     )}<div class="editor-body"><div class="section-heading"><h2>${htmlEscape(s?.title || "片段编辑")} <span id="review-draft-badge" class="badge orange">草稿未保存</span></h2><span class="hint">时间相对片段起点 ${icon("info-circle")}</span></div><div id="subtitle-panel" ${review.tab === "subtitles" ? "" : "hidden"}>${s ? `<div class="subtitle-empty" id="subtitle-empty" ${lines.length ? "hidden" : ""}>${s.state === "dropped" ? `<strong>当前片段已废弃</strong><p>${htmlEscape(s.drop_reason || "人工判断无需切片")}。源录播保留，本片段不再生成成片或发布。</p>` : `<strong>当前片段还没有字幕</strong><p>点击“本地模型识别字幕”自动转写当前片段，也可试听后手工添加。核对并保存字幕后才能生成成片。</p>`}</div><div class="subtitle-scroll" ${lines.length ? "" : "hidden"}><table class="list subtitle-table"><thead><tr><th>定位</th><th>开始时间</th><th>结束时间</th><th>字幕内容</th><th></th></tr></thead><tbody id="review-lines">${subtitleRows(lines)}</tbody></table></div><div class="subtitle-actions"><button id="review-transcribe" class="btn btn-primary btn-sm">本地模型识别字幕</button><button id="review-add-line" class="btn btn-secondary btn-sm">${icon("plus")}添加字幕行</button><button id="review-save" class="btn btn-primary">保存字幕</button></div><p class="hint subtitle-help">识别当前已保存的片段范围 · 结果填入草稿，核对后保存</p><p class="hint subtitle-help">点击行号定位字幕 · 时间从片段起点 00:00 计时</p><p class="hint save-note">${icon("info-circle")}保存字幕会使旧成片失效，需要重新生成</p>` : emptyState("选择或创建片段后编辑字幕")}</div><div id="content-panel" ${review.tab === "content" ? "" : "hidden"}>${content}<div class="evidence-section">${reviewEvidenceHTML()}</div></div><p id="review-message" role="status">${initial}</p></div></section></div>
-    <section class="candidate-panel card"><h3>片段候选 <span class="muted">（共 ${review.segments.length} 个）</span></h3><div class="candidate-navigation"><button class="icon-button" id="candidate-prev" aria-label="向前滚动候选">${icon("chevron-left")}</button><div class="candidate-strip">${review.segments.map((x, i) => `<button class="candidate-card ${x.segment_id === s?.segment_id ? "selected" : ""}" data-segment="${x.segment_id}" aria-pressed="${x.segment_id === s?.segment_id}" title="${htmlEscape(x.title || "人工片段")}"><strong>${i + 1}. ${htmlEscape(x.title || "人工片段")}</strong><span class="num">${timecode(x.source_start)} – ${timecode(x.source_end)}</span>${statusBadge(x.publish_approval ? "已允许发布" : reviewStates[x.state] || x.state, x.publish_approval ? "green" : x.state === "dropped" ? "muted" : x.state === "awaiting_publish" ? "purple" : "blue")}</button>`).join("") || '<p class="muted">尚无片段。可点击“AI 分析本场录播”，或补选源区间手动创建片段。</p>'}</div><button class="icon-button" id="candidate-next" aria-label="向后滚动候选">${icon("chevron-right")}</button></div><footer class="workbench-actions"><p class="hint">${icon("info-circle")}可在内容页查看 AI 判断与质量</p><div class="action-row"><span id="review-save-hint" class="muted" role="status"></span>${s ? '<button id="review-drop-open" class="btn btn-secondary">废弃当前片段</button><button id="review-finalize" class="btn btn-muted">重新生成成片</button><button id="review-approve" class="btn btn-primary">允许发布</button>' : ""}</div></footer><p id="review-job" role="status"></p></section>` +
+    <section class="candidate-panel card"><h3>片段候选 <span class="muted">（共 ${review.segments.length} 个）</span></h3><div class="candidate-navigation"><button class="icon-button" id="candidate-prev" aria-label="向前滚动候选">${icon("chevron-left")}</button><div class="candidate-strip">${review.segments.map((x, i) => `<button class="candidate-card ${x.segment_id === s?.segment_id ? "selected" : ""}" data-segment="${x.segment_id}" aria-pressed="${x.segment_id === s?.segment_id}" title="${htmlEscape(x.title || "人工片段")}"><strong>${i + 1}. ${htmlEscape(x.title || "人工片段")}</strong><span class="num">${timecode(x.source_start)} – ${timecode(x.source_end)}</span>${statusBadge(x.publish_approval ? "已允许发布" : reviewStates[x.state] || x.state, x.publish_approval ? "green" : x.state === "dropped" ? "muted" : x.state === "awaiting_publish" ? "purple" : "blue")}</button>`).join("") || '<p id="candidate-empty" class="muted"></p>'}</div><button class="icon-button" id="candidate-next" aria-label="向后滚动候选">${icon("chevron-right")}</button></div><footer class="workbench-actions"><p class="hint">${icon("info-circle")}可在内容页查看 AI 判断与质量</p><div class="action-row"><span id="review-save-hint" class="muted" role="status"></span>${s ? '<button id="review-drop-open" class="btn btn-secondary">废弃当前片段</button><button id="review-finalize" class="btn btn-muted">重新生成成片</button><button id="review-approve" class="btn btn-primary">允许发布</button>' : ""}</div></footer><p id="review-job" role="status"></p></section>` +
     dialogHTML(
       "source-dialog",
       "场次与分析管理",
@@ -624,6 +710,8 @@ function drawManualWorkbench() {
   const main = document.getElementById("main");
   const s = review.segment,
     task = review.task;
+  const preserveAnalysisPlayback = review.analysisPlaybackTask === task?.task_id;
+  review.analysisPlaybackTask = null;
   const subtitleKey = draftKey(),
     styleKey = styleDraftKey(),
     viewEpoch = pageEpoch;
@@ -661,6 +749,7 @@ function drawManualWorkbench() {
   review.metadataUnsaved = false;
   main.innerHTML = reviewMarkup(s, task, lines, initial);
   arrangeReviewWorkbench();
+  updateRecordingAnalysis();
   if (!s) updateReviewActions();
   restorePageScroll("library");
   bindDialogs();
@@ -812,17 +901,19 @@ function drawManualWorkbench() {
     const analyze = document.getElementById(id);
     analyze.disabled = !!(review.lifecycle?.review_result || ["pending", "processing"].includes(review.analysisJob?.status));
     analyze.onclick = async () => {
-      analyze.disabled = true;
+      review.analysisSubmitting = true;
+      updateRecordingAnalysis();
       try {
         await mutateReview("/api/actions", {
           action: "start_analysis",
           target: task.task_id,
         });
+        review.analysisSubmitting = false;
         await renderManualWorkbench();
       } catch (e) {
+        review.analysisSubmitting = false;
         if (!stillHere()) return;
-        analyze.disabled = false;
-        alert(e.message);
+        updateRecordingAnalysis(`分析未能提交：${e.message}。请重试。`);
       }
     };
   }
@@ -853,7 +944,7 @@ function drawManualWorkbench() {
     setMessage("recording-duration", Number.isFinite(source.duration) ? `时长 ${timecode(Math.floor(source.duration))}` : "时长未知");
     const saved = review.playback,
       same =
-        saved?.task === task.task_id && saved.segment === (s?.segment_id || "");
+        saved?.task === task.task_id && (preserveAnalysisPlayback || saved.segment === (s?.segment_id || ""));
     source.currentTime = same ? saved.time : s?.source_start || 0;
     if (same && !saved.paused && review.media === "source")
       source.play().catch(() => {});
@@ -911,6 +1002,9 @@ function drawManualWorkbench() {
         renderManualWorkbench();
       }),
   );
+  review.analysisInputs = analysisInputSnapshot();
+  if (["pending", "processing"].includes(review.analysisJob?.status))
+    analysisTimer = setTimeout(() => watchRecordingAnalysis(task.task_id, viewEpoch), 2000);
   if (!s) return;
   const advanceCandidate = async () => {
     const refreshed = await mutateReview(`/api/recordings/${task.task_id}/segments`);
