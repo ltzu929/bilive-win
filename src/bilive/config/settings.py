@@ -39,7 +39,7 @@ class BurstConfig:
 @dataclass
 class MimoConfig:
     base_url: str = "https://api.xiaomimimo.com/v1"
-    model: str = "mimo-v2.5"
+    model: str = "mimo-v2.6-flash"
     fps: int = 1
     media_resolution: str = "default"
     timeout: int = 180

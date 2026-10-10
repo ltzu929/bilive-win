@@ -19,7 +19,7 @@ top_n = 3
 lag = 0
 
 [slice.mimo]
-model = "mimo-v2.5"
+model = "mimo-v2.6-flash"
 fps = 1
 media_resolution = "default"
 timeout = 180

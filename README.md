@@ -52,6 +52,10 @@ Whisper 模型在同一场分析的所有候选和补做的正式识别之间复
 这些限制优先保证桌面响应，处理时间可能增加；它们不保证 GPU 利用率、显存或磁盘带宽的硬上限。
 代码或配置变更需重启 Worker 生效，运行中的任务应先完成。
 
+MiMo 视频判断与字幕校正默认使用 `mimo-v2.6-flash`，由 `bilive-server.toml` 的 `slice.mimo.model` 统一配置；本地 ASR 仍使用 faster-whisper。两处 MiMo 请求均显式关闭思考模式并限制 `max_completion_tokens=2048`。此次迁移对应官方 `mimo-v2.5` → `mimo-v2.6-flash` 的替换计划，旧名称将于北京时间 2026-10-21 10:00 下线（[官方说明](https://mimo.mi.com/docs/zh-CN/updates/deprecate)）。
+
+后续待研究方向：模型思考强度、MiMo ASR、提示词优化、批量推理；现状、验证重点与边界见 [MiMo 后续优化方向](docs/compose/mimo-optimization-directions.md)，目前未启用这些优化。
+
 AI 分析仅在生成单个片段时持有该片段的锁，不在转码、模型识别或远程判断期间锁住整个工作台。
 已完成片段的字幕可在同场其他候选仍分析时保存；版本校验、发布保护和回收期间禁止编辑仍然有效。
 

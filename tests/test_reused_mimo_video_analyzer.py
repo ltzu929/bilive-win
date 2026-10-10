@@ -83,7 +83,7 @@ def test_encode_video_for_mimo_honors_encode_parallelism(tmp_path):
 def test_server_config_exports_mimo_settings():
     from bilive.vendor import config as server_config
 
-    assert server_config.MIMO_MODEL == "mimo-v2.5"
+    assert server_config.MIMO_MODEL == "mimo-v2.6-flash"
     assert server_config.MIMO_BASE_URL == "https://api.xiaomimimo.com/v1"
     assert server_config.MIMO_FPS == 1.0
     assert server_config.MIMO_MEDIA_RESOLUTION == "default"
@@ -168,7 +168,7 @@ def test_judge_candidate_with_mimo_requests_structured_video_json(monkeypatch):
                 {
                     "choices": [type("Choice", (), {"message": message})()],
                     "usage": usage,
-                    "model": "mimo-v2.5",
+                    "model": "mimo-v2.6-flash",
                 },
             )()
 
@@ -201,7 +201,8 @@ def test_judge_candidate_with_mimo_requests_structured_video_json(monkeypatch):
 
     assert calls["client"]["api_key"] == "secret-key"
     assert calls["client"]["base_url"] == "https://api.xiaomimimo.com/v1"
-    assert calls["model"] == "mimo-v2.5"
+    assert calls["model"] == "mimo-v2.6-flash"
+    assert calls["max_completion_tokens"] == 2048
     assert calls["response_format"] == {"type": "json_object"}
     assert calls["extra_body"] == {"thinking": {"type": "disabled"}}
     assert calls["timeout"] == 180
@@ -219,7 +220,7 @@ def test_judge_candidate_with_mimo_requests_structured_video_json(monkeypatch):
         trim_end=8.0,
         reason="strong moment",
     )
-    assert result.model_name == "mimo-v2.5"
+    assert result.model_name == "mimo-v2.6-flash"
     assert result.token_usage["total_tokens"] == 140
 
 

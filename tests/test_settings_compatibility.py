@@ -87,9 +87,10 @@ def test_judgment_and_correction_share_instance_endpoint(monkeypatch):
     from bilive.vendor.autoslice.mllm_sdk import mimo_video
     from bilive.vendor.autoslice import transcript_correct
     endpoints=[]
-    monkeypatch.setattr(mimo_video,'judge_candidate_clips_with_mimo',lambda **kw:endpoints.append(kw['base_url']) or [])
-    monkeypatch.setattr(transcript_correct,'correct_transcript_segments',lambda segments,**kw:endpoints.append(kw['base_url']) or segments)
+    monkeypatch.setattr(mimo_video,'judge_candidate_clips_with_mimo',lambda **kw:endpoints.append((kw['base_url'],kw['model'])) or [])
+    monkeypatch.setattr(transcript_correct,'correct_transcript_segments',lambda segments,**kw:endpoints.append((kw['base_url'],kw['model'])) or segments)
     s=Settings();s.mimo.base_url='https://isolated-config.example/v1'
+    s.mimo.model='isolated-custom-model'
     pipeline=AnalysisPipeline(s,None,None)
     assert pipeline._judge() == [] and pipeline._correct([]) == []
-    assert endpoints == [s.mimo.base_url,s.mimo.base_url]
+    assert endpoints == [(s.mimo.base_url,s.mimo.model)] * 2
