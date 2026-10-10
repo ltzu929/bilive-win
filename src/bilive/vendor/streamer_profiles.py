@@ -240,6 +240,7 @@ def default_streamer_profile(room_id: str) -> dict[str, Any]:
         "room_id": _validate_room_id(room_id),
         "display_name": "",
         "aliases": [],
+        "subtitle_hotwords": [],
         "default_tags": [],
         "default_description": "",
         "default_title_template": "",
@@ -311,6 +312,7 @@ def patch_streamer_profile(
     allowed = {
         "display_name",
         "aliases",
+        "subtitle_hotwords",
         "default_tags",
         "default_description",
         "default_title_template",
@@ -338,6 +340,18 @@ def patch_streamer_profile(
             if not isinstance(value, list):
                 raise ValueError(f"{key} must be an array")
             profile[key] = [str(item).strip() for item in value if str(item).strip()]
+        if "subtitle_hotwords" in payload:
+            value = payload["subtitle_hotwords"]
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                raise ValueError("字幕专名必须是字符串数组")
+            names = []
+            for item in value:
+                name = item.strip()
+                if any(char in name for char in "\r\n\x00"):
+                    raise ValueError("每个字幕专名只能包含一个名称，请分行填写")
+                if name and name not in names:
+                    names.append(name)
+            profile["subtitle_hotwords"] = names
         for key in ("default_description", "approved_guidance"):
             if key in payload:
                 profile[key] = str(payload.get(key) or "")

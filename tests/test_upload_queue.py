@@ -19,6 +19,63 @@ def test_missing_db_is_unavailable(tmp_path: Path):
         q.list()
 
 
+@pytest.mark.parametrize('stage,remote', [('staged', None), ('queued', None),
+                                        ('failed', None), ('uploaded', 'remote.mp4'),
+                                        ('failed', 'remote.mp4')])
+def test_cancel_preserves_artifacts_and_excludes_future_work(queue, stage, remote, tmp_path):
+    import sqlite3
+    path = tmp_path / 'final.mp4'
+    path.write_bytes(b'final')
+    queue.stage(str(path), title='取消测试')
+    with sqlite3.connect(queue.db_path) as conn:
+        conn.execute('UPDATE upload_queue SET stage=?,remote_filename=?,next_attempt_at=0 WHERE video_path=?',
+                     (stage, remote, str(path)))
+    row = queue.cancel(str(path))
+    assert row['stage'] == 'cancelled' and row['next_attempt_at'] is None
+    assert row['remote_filename'] == remote and path.read_bytes() == b'final'
+    assert queue.cancel(str(path))['stage'] == 'cancelled'
+    assert queue.peek_next() is None and queue.claim_next() is None
+    assert queue.recover_interrupted() == 0
+    with pytest.raises(ValueError):
+        queue.manual_retry(str(path))
+    with pytest.raises(ValueError):
+        queue.withdraw(str(path))
+    with sqlite3.connect(queue.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM upload_history WHERE stage='cancelled'").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize('stage', ['uploading', 'publishing', 'published', 'unknown'])
+def test_cancel_rejects_inflight_or_published(queue, stage):
+    import sqlite3
+    queue.stage('/v/protected.mp4')
+    with sqlite3.connect(queue.db_path) as conn:
+        conn.execute('UPDATE upload_queue SET stage=?', (stage,))
+    with pytest.raises(ValueError):
+        queue.cancel('/v/protected.mp4')
+    assert queue.get_by_path('/v/protected.mp4')['stage'] == stage
+
+
+def test_cancel_api_uses_current_database_state(queue, monkeypatch):
+    import importlib
+    import sqlite3
+    from fastapi.testclient import TestClient
+    api = importlib.import_module('bilive.api.app')
+    monkeypatch.setattr(api, 'upload_queue', queue)
+    queue.stage('/v/api.mp4')
+    with sqlite3.connect(queue.db_path) as conn:
+        conn.execute("UPDATE upload_queue SET stage='failed',remote_filename='saved-remote'")
+    client = TestClient(api.app)
+    response = client.post('/api/uploads/cancel', json={'video_path': '/v/api.mp4', 'stage': 'queued'})
+    assert response.status_code == 200
+    assert response.json()['stage'] == 'cancelled'
+    assert response.json()['remote_filename'] == 'saved-remote'
+    with sqlite3.connect(queue.db_path) as conn:
+        conn.execute("UPDATE upload_queue SET stage='publishing'")
+    response = client.post('/api/uploads/cancel', json={'video_path': '/v/api.mp4', 'stage': 'failed'})
+    assert response.status_code == 409 and '正在上传或投稿' in response.json()['detail']
+    assert queue.get_by_path('/v/api.mp4')['stage'] == 'publishing'
+
+
 @pytest.mark.parametrize('table', ['upload_queue','upload_history'])
 def test_missing_table_is_unavailable_without_repair(queue, table):
     import sqlite3

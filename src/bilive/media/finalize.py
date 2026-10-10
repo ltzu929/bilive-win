@@ -51,6 +51,16 @@ def verify_media(path: Path) -> None:
         raise PipelineError(str(exc)) from exc
 
 
+def _video_encode_options() -> list[str]:
+    from bilive.config.settings import load_settings
+    encoder = load_settings().video.encoder
+    if encoder == "h264_nvenc":
+        # CQ is specific to NVENC; it is not numerically equivalent to x264 CRF.
+        return ["-c:v", encoder, "-preset", "p5", "-rc", "vbr",
+                "-cq", "26", "-b:v", "0", "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p"]
+
+
 def ensure_raw_cut(
     source: Path,
     raw_out: Path,
@@ -74,7 +84,7 @@ def ensure_raw_cut(
             "-ss", f"{start:.3f}",
             "-i", str(source),
             "-t", f"{end - start:.3f}",
-            "-c:v", "libx264", "-preset", "fast", "-c:a", "aac",
+            *_video_encode_options(), "-c:a", "aac",
             str(tmp),
         ],
         log,
@@ -102,6 +112,7 @@ def burn_subtitles(
             "ffmpeg", "-y",
             "-i", str(raw),
             "-vf", f"subtitles=filename='{ass_arg}'",
+            *_video_encode_options(),
             "-c:a", "copy",
             str(tmp),
         ],

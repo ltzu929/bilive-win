@@ -32,9 +32,11 @@ class WorkerControl:
                 return {"state":"unavailable","detail":"unexpected service on Worker port"}
             return status
         except (URLError, OSError, ValueError):
-            return {"state":"offline"}
+            return {"state":"paused" if (self.runtime / 'worker-paused').exists() else "offline"}
 
     def wake(self):
+        if (self.runtime / 'worker-paused').exists():
+            return {'state': 'paused', 'detail': 'Worker paused by user'}
         with ProcessLock(self.runtime / "worker-start.lock"):
             status = self.status()
             if status["state"] != "offline":

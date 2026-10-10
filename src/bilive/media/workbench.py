@@ -36,6 +36,9 @@ class Workbench:
     def lock(self) -> ProcessLock:
         return ProcessLock(self.artifacts / "workbench.lock")
 
+    def segment_lock(self, sid: str) -> ProcessLock:
+        return ProcessLock(self.artifacts / 'segment-locks' / f'{validate_id(sid)}.lock')
+
     def current_default_style(self) -> dict:
         return dict(self.default_style_provider() if self.default_style_provider else self.default_style)
 
@@ -71,7 +74,7 @@ class Workbench:
                     return {"job_id": job.job_id, "action": job.action, "status": status}
         return None
 
-    def editable(self, s: dict) -> None:
+    def editable(self, s: dict, *, allow_source_analysis: bool = False) -> None:
         if s.get('state') == 'dropped':
             raise ActionConflict('segment has been discarded')
         from bilive.lifecycle.review import SourceReview
@@ -81,14 +84,15 @@ class Workbench:
             raise ActionConflict('source review already complete')
         if self.active(s["segment_id"]):
             raise ActionConflict("segment has an active task")
-        self.check_source_idle(s['source_relpath'])
+        self.check_source_idle(s['source_relpath'], allow_analysis=allow_source_analysis)
         if s.get("publish_approval"):
             raise ActionConflict("approved final is protected; create a new manual segment")
 
-    def check_source_idle(self, rel: str):
+    def check_source_idle(self, rel: str, *, allow_analysis: bool = False):
         from bilive.domain.models import task_id_from_source_relpath
         task = task_id_from_source_relpath(rel)
-        if any(j.target == task for state in (ActionJobStatus.PENDING,ActionJobStatus.PROCESSING)
+        if any(j.target == task and not (allow_analysis and j.action == 'start_analysis')
+               for state in (ActionJobStatus.PENDING,ActionJobStatus.PROCESSING)
                for _,j in self.jobs.valid_jobs(state)):
             raise ActionConflict('source has an active analysis or recycle action')
 
@@ -212,10 +216,12 @@ class Workbench:
             return self.detail(sid)
 
     def save_subtitles(self, sid: str, expected: int, lines: list[SubtitleLine]) -> dict:
-        with self.lock():
+        # AI owns the same segment lock until its final save. Other completed
+        # segments can be edited while source analysis prepares later results.
+        with self.segment_lock(sid), self.lock():
             s = self.load(sid)
             self.check_revision(s, expected)
-            self.editable(s)
+            self.editable(s, allow_source_analysis=True)
             duration = s["source_end"] - s["source_start"]
             if not lines:
                 raise ValueError("at least one subtitle line required")

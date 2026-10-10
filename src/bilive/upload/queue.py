@@ -164,6 +164,7 @@ class UploadQueue:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         conn = self._conn()
         try:
+            conn.execute('BEGIN IMMEDIATE')
             row = conn.execute(
                 "SELECT * FROM upload_queue WHERE video_path=?", (video_path,)
             ).fetchone()
@@ -173,6 +174,8 @@ class UploadQueue:
                 raise ValueError(f"cannot withdraw while {row['stage']}")
             if row["stage"] == UploadStage.PUBLISHED.value:
                 raise ValueError("published row is immutable")
+            if row['stage'] == 'cancelled':
+                raise ValueError('已取消的任务不能自动撤回为待发布')
             conn.execute(
                 "UPDATE upload_queue SET stage=?, updated_at=? WHERE video_path=?",
                 (UploadStage.STAGED.value, now, video_path),
@@ -181,6 +184,31 @@ class UploadQueue:
                 "INSERT INTO upload_history (video_path, stage, detail, created_at) VALUES (?,?,?,?)",
                 (video_path, UploadStage.STAGED.value, "withdrawn", now),
             )
+            conn.commit()
+            return self.get_by_path(video_path) or {}
+        finally:
+            conn.close()
+
+    def cancel(self, video_path: str) -> dict:
+        """Cancel local future work without deleting artifacts or remote identifiers."""
+        conn = self._conn()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT * FROM upload_queue WHERE video_path=?', (video_path,)).fetchone()
+            if row is None:
+                raise ValueError('未找到该上传任务')
+            if row['stage'] == 'cancelled':
+                conn.rollback()
+                return dict(row)
+            if row['stage'] in {'uploading', 'publishing'}:
+                raise ValueError('任务正在上传或投稿，请等待当前操作结束后再取消')
+            if row['stage'] not in {'staged', 'queued', 'uploaded', 'failed'}:
+                raise ValueError('该任务已发布或状态不可取消；取消本地任务不能撤回 B 站稿件')
+            now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            conn.execute("UPDATE upload_queue SET stage='cancelled',next_attempt_at=NULL,updated_at=? WHERE video_path=?",
+                         (now, video_path))
+            conn.execute('INSERT INTO upload_history (video_path,stage,detail,created_at) VALUES (?,?,?,?)',
+                         (video_path, 'cancelled', '用户取消本地上传及发布任务，保留成片与远端结果', now))
             conn.commit()
             return self.get_by_path(video_path) or {}
         finally:
@@ -197,10 +225,12 @@ class UploadQueue:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         conn = self._conn()
         try:
-            conn.execute(
-                "UPDATE upload_queue SET stage=?, updated_at=?, next_attempt_at=NULL,attempts=0 WHERE video_path=?",
+            cur = conn.execute(
+                "UPDATE upload_queue SET stage=?, updated_at=?, next_attempt_at=NULL,attempts=0 WHERE video_path=? AND stage='failed' AND (remote_filename IS NULL OR remote_filename='')",
                 (UploadStage.QUEUED.value, now, video_path),
             )
+            if cur.rowcount != 1:
+                raise ValueError('任务状态已变化，无法重试')
             conn.commit()
             return self.get_by_path(video_path) or {}
         finally:
@@ -335,7 +365,7 @@ class UploadQueue:
     def defer_auth(self, video_path: str, next_attempt: float) -> None:
         conn = self._conn()
         try:
-            conn.execute("UPDATE upload_queue SET next_attempt_at=?,last_error='authentication unavailable' WHERE video_path=?",
+            conn.execute("UPDATE upload_queue SET next_attempt_at=?,last_error='authentication unavailable' WHERE video_path=? AND stage IN ('queued','uploaded')",
                          (next_attempt, video_path))
             conn.commit()
         finally:

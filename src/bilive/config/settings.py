@@ -23,6 +23,7 @@ class WorkerConfig:
 @dataclass
 class VideoConfig:
     min_source_size_mb: float = 100.0
+    encoder: str = "libx264"
 
 
 @dataclass
@@ -73,8 +74,8 @@ class SubtitleConfig:
     asr_model: str = "large-v3"
     asr_device: str = "cuda"
     asr_compute_type: str = "float16"
-    asr_batch: int = 8
-    asr_cpu_threads: int = 8
+    asr_batch: int = 2
+    asr_cpu_threads: int = 2
     asr_vad: bool = True
     padding: float = 6.0
     snap_tolerance: float = 3.0
@@ -299,6 +300,10 @@ def load_settings(config_path: Path | None = None) -> Settings:
     if 'BILIVE_PRE_JUDGE_ASR_MAX_CHARS' in os.environ:
         settings.analysis.asr_prompt_max_chars=int(os.environ['BILIVE_PRE_JUDGE_ASR_MAX_CHARS'])
 
+    if "BILIVE_VIDEO_ENCODER" in os.environ:
+        settings.video.encoder = os.environ["BILIVE_VIDEO_ENCODER"]
+    if settings.video.encoder not in {"libx264", "h264_nvenc"}:
+        raise ValueError("video.encoder must be libx264 or h264_nvenc")
     return settings
 
 

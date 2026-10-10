@@ -176,6 +176,7 @@ def transcribe_audio_whisper(
     vad_filter: bool = WHISPER_VAD_FILTER,
     vad_min_silence_ms: int = WHISPER_VAD_MIN_SILENCE_MS,
     vad_speech_pad_ms: int = WHISPER_VAD_SPEECH_PAD_MS,
+    hotwords: str | None = None,
 ) -> dict[str, Any]:
     if engine != "faster-whisper":
         raise ValueError("Only faster-whisper is supported")
@@ -256,7 +257,10 @@ def transcribe_audio_whisper(
                 "vad_filter": bool(vad_filter),
                 "vad_parameters": vad_parameters if vad_filter else None,
                 "without_timestamps": False,
+                "word_timestamps": True,
             }
+            if hotwords:
+                transcription_options["hotwords"] = hotwords
             mode = "batched" if _whisper_batch_pipeline is not None else "sequential"
             transcribe_started = time.perf_counter()
             if _whisper_batch_pipeline is not None:
@@ -293,6 +297,10 @@ def transcribe_audio_whisper(
                 "start": float(segment.start),
                 "end": float(segment.end),
                 "text": normalize_transcript(segment.text),
+                "words": [
+                    {"start": float(word.start), "end": float(word.end), "word": word.word}
+                    for word in (getattr(segment, "words", None) or [])
+                ],
             }
             for segment in raw_segments
         ]

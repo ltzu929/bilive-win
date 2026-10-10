@@ -1,5 +1,6 @@
 from contextlib import nullcontext
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -10,13 +11,14 @@ from bilive.media.finalize import PipelineError
 
 def pipeline(monkeypatch, transcript):
     segment = {'source_relpath': 'sample.mp4', 'source_start': 10, 'source_end': 14}
-    wb = SimpleNamespace(lock=nullcontext, load=lambda sid: segment,
+    wb = SimpleNamespace(videos=Path('Videos'), lock=nullcontext, load=lambda sid: segment,
         check_revision=lambda s, revision: None, check_source_idle=lambda rel: None,
         source=lambda rel: rel)
     monkeypatch.setattr('bilive.analysis.pipeline._ffprobe_duration', lambda *args: 20)
     settings = Settings()
     settings.subtitle.padding = 0
     settings.subtitle.snap_enabled = False
+    settings.subtitle.light_correct = False
     return AnalysisPipeline(settings, wb, None, transcribe=lambda *a, **kw: transcript)
 
 
@@ -94,3 +96,55 @@ def test_auxiliary_asr_with_blank_cues_remains_reusable(monkeypatch, tmp_path):
         SimpleNamespace(start=0, end=4, burst_start=0, burst_end=4), tmp_path / 'candidate.mp4', entry, [], {})
     assert prepared['transcript'] == transcript
     assert not entry.get('pre_asr_failed')
+
+
+def test_manual_subtitle_correction_changes_only_draft_text(monkeypatch):
+    from bilive.vendor.autoslice.analysis_result import TranscriptSegment
+    p = pipeline(monkeypatch, {'segments': [{'start': 0.2, 'end': 1.4, 'text': '谢谢上剑'}]})
+    p.settings.subtitle.light_correct = True
+    p.correct = lambda lines, **kw: [TranscriptSegment(v.start, v.end, '谢谢上舰') for v in lines]
+    result = p.transcribe_segment(SimpleNamespace(target='sample', payload={'revision': 1}))
+    assert result['lines'] == [{'index': 1, 'start': 0.2, 'end': 1.4, 'text': '谢谢上舰'}]
+    assert result['correction'] == {'status': 'corrected', 'changed_lines': 1}
+
+
+@pytest.mark.parametrize('bad_output', ['timestamp', 'empty', 'count', 'failure'])
+def test_manual_correction_failure_preserves_original_draft(monkeypatch, bad_output):
+    p = pipeline(monkeypatch, {'segments': [{'start': 0.2, 'end': 1.4, 'text': '原始字幕'}]})
+    p.settings.subtitle.light_correct = True
+    def correct(lines, **kwargs):
+        if bad_output == 'failure':
+            raise RuntimeError('isolated unavailable correction service')
+        if bad_output == 'timestamp':
+            lines[0].start = 99
+        elif bad_output == 'empty':
+            lines[0].text = ''
+        else:
+            return []
+        return lines
+    p.correct = correct
+    result = p.transcribe_segment(SimpleNamespace(target='sample', payload={'revision': 1}))
+    assert result['lines'] == [{'index': 1, 'start': 0.2, 'end': 1.4, 'text': '原始字幕'}]
+    assert result['correction'] == {'status': 'failed_original_retained', 'changed_lines': 0}
+
+
+def test_manual_recognition_and_correction_share_saved_streamer_hotwords(monkeypatch, tmp_path):
+    from bilive.vendor.streamer_profiles import patch_streamer_profile
+    transcript = {'segments': [{'start': 0.2, 'end': 1.4, 'text': '白露'}]}
+    p = pipeline(monkeypatch, transcript)
+    p.workbench.videos = tmp_path
+    p.workbench.load('sample')['source_relpath'] = '123 - 主播甲/session.mp4'
+    p.settings.subtitle.light_correct = True
+    patch_streamer_profile(tmp_path, '123', {'display_name': '主播甲', 'aliases': ['甲甲'],
+        'subtitle_hotwords': ['白露', '匹诺康尼']})
+    calls = []
+    p.transcribe = lambda *args, **kw: calls.append(('asr', kw)) or transcript
+    p.correct = lambda lines, **kw: calls.append(('correction', kw)) or lines
+    result = p.transcribe_segment(SimpleNamespace(target='sample', payload={'revision': 1}))
+    assert result['lines'] == [{'index': 1, 'start': 0.2, 'end': 1.4, 'text': '白露'}]
+    assert [kw['hotwords'] for _, kw in calls] == [['主播甲', '甲甲', '白露', '匹诺康尼']] * 2
+    assert calls[0][1]['start_seconds'] == 10 and calls[0][1]['duration_seconds'] == 4
+    patch_streamer_profile(tmp_path, '123', {'subtitle_hotwords': ['新角色']})
+    calls.clear()
+    p.transcribe_segment(SimpleNamespace(target='sample', payload={'revision': 1}))
+    assert [kw['hotwords'] for _, kw in calls] == [['主播甲', '甲甲', '新角色']] * 2

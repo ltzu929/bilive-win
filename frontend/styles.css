@@ -2947,10 +2947,12 @@ dialog header {
 .recording-file-details { display: none; }
 .workbench-head .head-actions { gap: 6px; flex-shrink: 1; max-width: 430px; }
 .workbench-head .head-actions .btn { height: 30px; font-size: 12px; padding: 0 8px; }
-.page-library .workbench-grid, .page-library .workbench-grid:not(.large-player) { display: grid; grid-template-columns: minmax(0, 1fr) 300px; flex: 0 0 400px; height: 400px; min-height: 0; gap: 0; overflow: hidden; border: 1px solid var(--line); background: white; }
+.page-library .workbench-grid, .page-library .workbench-grid:not(.large-player) { --player-height: 400px; display: grid; grid-template-columns: minmax(0, min(64%, calc((var(--player-height) - 50px) * 16 / 9 + 24px))) minmax(0, 1fr); flex: 0 0 var(--player-height); height: var(--player-height); min-height: 0; gap: 0; overflow: hidden; border: 1px solid var(--line); background: white; }
 .player-column { min-height: 0; padding: 0; display: flex; flex-direction: column; }
 .player-toolbar { height: 40px; padding: 0 12px; flex-shrink: 0; }
-.player-toolbar .tabs { margin: 0; }
+.player-toolbar .tabs { margin: 0; height: 100%; align-items: stretch; }
+.player-toolbar .tab { display: inline-flex; align-items: center; height: 100%; padding: 0 20px; }
+.player-toolbar .tab.active::after { bottom: 0; }
 .player-body { padding: 0 12px 8px; display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .player-body > #source-media, .player-body > #final-media { flex: 1; min-height: 0; height: 100%; display: flex; align-items: center; background: #141b24; border-radius: 2px; overflow: hidden; }
 .player-body > [hidden] { display: none !important; }
@@ -3012,7 +3014,7 @@ dialog header {
 .metadata-form textarea { min-height: 85px; }
 #review-message { font-size: 12px; margin-top: 8px; min-height: 20px; }
 #review-job { font-size: 12px; flex-shrink: 0; }
-.page-library .workbench-grid.large-player { grid-template-columns: minmax(0, 1fr) 260px; flex-basis: 510px; height: 510px; }
+.page-library .workbench-grid.large-player { --player-height: 510px; grid-template-columns: minmax(0, min(75%, calc((var(--player-height) - 50px) * 16 / 9 + 24px))) minmax(0, 1fr); flex-basis: var(--player-height); height: var(--player-height); }
 .settings-layout { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 24px; height: calc(100dvh - 100px); }
 .settings-layout > .tabs { flex-direction: column; border-bottom: 0; border-right: 1px solid var(--line); gap: 3px; margin: 0; align-items: stretch; }
 .settings-layout > .tabs .tab { text-align: left; padding: 10px 12px; }

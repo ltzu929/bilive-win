@@ -39,6 +39,7 @@ def _build_correct_prompt(
     artist: str = "",
     title: str = "",
     context: str = "",
+    hotwords: list[str] | None = None,
 ) -> str:
     body = _compact_lines(segments)
     context_text = str(context or "").strip()
@@ -49,6 +50,9 @@ def _build_correct_prompt(
         f"主播: {artist or 'unknown'}\n"
         f"标题线索: {title or '(none)'}\n"
         f"弹幕关键词线索: {context_text or '(none)'}\n\n"
+        f"已确认专名（JSON 名称列表）: {json.dumps(hotwords or [], ensure_ascii=False)}\n"
+        "专名列表仅供核对正确写法；只有发音和上下文吻合时才修正，"
+        "不要因列表强行替换普通词；多个候选无法确定时保留原文。\n\n"
         "只修正专有名词、明显同音错字和专名写法；不要改时间，不要增删行，"
         "不要润色口语，不要把原意改掉。拿不准就不要改。\n"
         "每行格式为「索引\\t原句」。返回严格 JSON：\n"
@@ -77,6 +81,7 @@ def correct_transcript_segments(
     artist: str = "",
     title: str = "",
     context: str = "",
+    hotwords: list[str] | None = None,
     model: str = MIMO_MODEL,
     base_url: str = MIMO_BASE_URL,
     timeout: float = MIMO_TIMEOUT,
@@ -111,6 +116,7 @@ def correct_transcript_segments(
                         artist=artist,
                         title=title,
                         context=context,
+                        hotwords=hotwords,
                     ),
                 },
             ],

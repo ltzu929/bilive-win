@@ -16,8 +16,53 @@ from bilive.upload.queue import UploadQueue
 from bilive.vendor.autoslice.analysis_result import AnalysisResult, TrimSuggestion
 
 
+def test_judge_transcript_has_candidate_relative_cue_times():
+    settings = Settings()
+    pipeline = AnalysisPipeline(settings, None, None)
+    transcript = {'segments': [
+        {'start': 1.25, 'end': 3.5, 'text': '事件落点'},
+        {'start': 4.0, 'end': 8.0, 'text': '谢谢舰长'},
+    ]}
+    assert pipeline._judge_transcript(transcript) == '1.25–3.50s 事件落点\n4.00–8.00s 谢谢舰长'
+    settings.analysis.asr_prompt_max_chars = len('1.25–3.50s 事件落点') + 2
+    assert pipeline._judge_transcript(transcript) == '1.25–3.50s 事件落点'
+    assert pipeline._judge_transcript(None) == ''
+
+
+@pytest.mark.parametrize('pre_judge', [False, True])
+def test_auto_analysis_passes_streamer_hotwords_to_asr_and_correction(setup, pre_judge):
+    from bilive.vendor.streamer_profiles import patch_streamer_profile
+    settings, wb, fin, queue = setup
+    settings.analysis.pre_judge_asr = pre_judge
+    settings.subtitle.light_correct = True
+    source = wb.videos / 'session.mp4'
+    named = source.with_name('blive_123_session.mp4')
+    source.rename(named)
+    source.with_suffix('.xml').rename(named.with_suffix('.xml'))
+    patch_streamer_profile(wb.videos, '123', {'display_name': '主播甲',
+        'subtitle_hotwords': ['白露', '匹诺康尼']})
+    calls = []
+
+    def asr(video, **kw):
+        calls.append(('asr', kw['hotwords']))
+        return {'segments': [{'start': 0, 'end': _ffprobe_duration(video, []), 'text': '白露'}]}
+
+    def correct(lines, **kw):
+        calls.append(('correction', kw['hotwords']))
+        return lines
+
+    pipeline = AnalysisPipeline(settings, wb, fin, judge=lambda **kw: [result()], transcribe=asr, correct=correct)
+    out = pipeline.run(named.name, task_id_from_source_relpath(named.name))
+    segment = wb.detail(out['segments'][0])
+    assert segment['final_valid'] and segment['state'] == 'awaiting_publish'
+    assert any(kind == 'asr' for kind, _ in calls) and any(kind == 'correction' for kind, _ in calls)
+    assert all(words == ['主播甲', '白露', '匹诺康尼'] for _, words in calls)
+    assert queue.get_by_path(segment['final_path'])['stage'] == 'staged'
+
+
 @pytest.fixture
-def setup(tmp_path):
+def setup(tmp_path, monkeypatch):
+    monkeypatch.setenv('BILIVE_VIDEO_ENCODER', 'libx264')
     videos = tmp_path / "Videos"
     videos.mkdir()
     source = videos / "session.mp4"
@@ -41,9 +86,142 @@ def setup(tmp_path):
     return settings, wb, fin, queue
 
 
+@pytest.mark.parametrize('release_after_task', [True, False])
+def test_scene_keeps_one_asr_model_for_candidates_and_formal_recognition(setup, monkeypatch, release_after_task):
+    import sys
+    import types
+    from bilive.vendor.autoslice.mllm_sdk import audio_analyzer as audio
+
+    settings, wb, fin, queue = setup
+    settings.subtitle.asr_device = 'cpu'
+    settings.subtitle.asr_compute_type = 'int8'
+    settings.multi_modal.unload_audio_model_after_analysis = release_after_task
+    loads, recognitions, releases = [], [], []
+
+    class Model:
+        def __init__(self, *args, **kwargs):
+            loads.append(True)
+
+    class Batch:
+        def __init__(self, model):
+            self.model = model
+
+        def transcribe(self, audio_path, **kwargs):
+            recognitions.append(audio_path)
+            cues = [types.SimpleNamespace(start=.2, end=1.8, text='有效字幕', words=[])]
+            if Path(audio_path).read_text() == 'formal':
+                cues.append(types.SimpleNamespace(start=2.2, end=3.8, text='另一条字幕', words=[]))
+            return iter(cues), types.SimpleNamespace(language='zh')
+
+    fake = types.ModuleType('faster_whisper')
+    fake.WhisperModel, fake.BatchedInferencePipeline = Model, Batch
+    monkeypatch.setitem(sys.modules, 'faster_whisper', fake)
+    for key in ('_whisper_model', '_whisper_batch_pipeline', '_whisper_model_key'):
+        monkeypatch.setattr(audio, key, None)
+    monkeypatch.setattr(audio, 'release_gpu_memory', lambda: releases.append(len(recognitions)))
+    monkeypatch.setattr('bilive.worker.preflight.cached_asr_model', lambda settings: wb.videos)
+
+    def extract(*args, **kwargs):
+        path = wb.artifacts / f'audio-{len(recognitions)}.wav'
+        path.write_text('formal' if Path(args[0]).name == 'asr_window.mp4' else 'candidate')
+        return str(path)
+
+    monkeypatch.setattr(audio, 'extract_audio', extract)
+    from bilive.vendor.autoslice.burst_detector import BurstEvent
+    events = [BurstEvent(a+1, a, a+2, 2, 10, 3, 20, burst_start=a+1, burst_end=a+1.2) for a in (0, 2)]
+    monkeypatch.setattr('bilive.analysis.pipeline.detect_bursts', lambda *args, **kwargs: events)
+    # Duplicate review is orthogonal to the model lifecycle under test.
+    monkeypatch.setattr('bilive.vendor.clip_rules._mark_cross_candidate_duplicates', lambda *args: None)
+    pipeline = AnalysisPipeline(settings, wb, fin, judge=lambda **kwargs: [result()])
+    output = pipeline.run('session.mp4', task_id_from_source_relpath('session.mp4'))
+
+    assert output['candidates'] == 2
+    assert len(recognitions) == 4  # Two candidate calls, then two padded formal calls.
+    assert loads == [True]
+    assert releases == ([4] if release_after_task else [])
+    assert (audio._whisper_model is None) == release_after_task
+    assert not list(wb.artifacts.glob('audio-*.wav'))
+
+
+@pytest.mark.parametrize('entry', ['run', 'transcribe_segment', 'retry_judge'])
+def test_asr_task_releases_cached_model_on_exception(monkeypatch, entry):
+    from bilive.vendor.autoslice.mllm_sdk import audio_analyzer as audio
+    for key in ('_whisper_model', '_whisper_batch_pipeline', '_whisper_model_key'):
+        monkeypatch.setattr(audio, key, object())
+    released = []
+    monkeypatch.setattr(audio, 'release_gpu_memory', lambda: released.append(True))
+    pipeline = AnalysisPipeline(Settings(), None, None)
+    with pytest.raises(AttributeError):
+        getattr(pipeline, entry)(*(['source.mp4', 'task'] if entry == 'run' else [None]))
+    assert released == [True]
+    assert audio._whisper_model is None and audio._whisper_batch_pipeline is None
+
+
 def result(start=0.2,end=1.8,quality=0.9):
     return AnalysisResult(title="完整话题",description="描述",quality_score=quality,
         completeness_score=0.9,confidence=0.9,judge_status="keep",suggested_trim=TrimSuggestion(start,end,"完整"))
+
+
+def test_completed_segment_subtitles_save_during_candidate_preparation(setup, monkeypatch):
+    from bilive.domain.models import SubtitleLine
+    from bilive.jobs.action_jobs import ActionConflict
+
+    settings, wb, fin, queue = setup
+    segment = wb.points('session.mp4', 4, 5.8, '已完成人工片段', '保留依据')
+    wb.jobs.submit('start_analysis', task_id_from_source_relpath('session.mp4'))
+    pipeline = AnalysisPipeline(settings, wb, fin)
+    saved = []
+
+    def prepare(*args):
+        # Executes on the actual preparation pool while pipeline.run is active.
+        with wb.lock():
+            pass
+        saved.append(wb.save_subtitles(segment['segment_id'], 1,
+                                      [SubtitleLine(1, 0, 1, '人工校对字幕')]))
+        return {'results': []}
+
+    monkeypatch.setattr(pipeline, '_prepare', prepare)
+    pipeline.run('session.mp4', task_id_from_source_relpath('session.mp4'))
+    assert saved[0]['revision'] == 2
+    assert wb.subtitles.load(segment['segment_id'])['lines'][0]['text'] == '人工校对字幕'
+    with pytest.raises(ActionConflict):
+        wb.save_subtitles(segment['segment_id'], 1, [SubtitleLine(1, 0, 1, '过期版本')])
+
+
+def test_generation_locks_only_its_own_segment(setup, monkeypatch):
+    from bilive.domain.models import SubtitleLine
+    from bilive.worker.locks import LockUnavailable
+
+    settings, wb, fin, queue = setup
+    settings.analysis.pre_judge_asr = False
+    wb.jobs.submit('start_analysis', task_id_from_source_relpath('session.mp4'))
+    pipeline = AnalysisPipeline(settings, wb, fin, judge=lambda **kw: [result()])
+    protected = []
+
+    def formal(source, sid, start, end, *args, **kwargs):
+        with wb.lock():
+            pass
+        with pytest.raises(LockUnavailable):
+            wb.save_subtitles(sid, 1, [SubtitleLine(1, 0, 1, '不能覆盖处理中字幕')])
+        protected.append(sid)
+        return start, end, [SubtitleLine(1, 0, 1, 'AI 字幕')], {}
+
+    monkeypatch.setattr(pipeline, '_formal_subtitles', formal)
+    out = pipeline.run('session.mp4', task_id_from_source_relpath('session.mp4'))
+    assert protected == out['segments']
+    assert wb.detail(protected[0])['final_valid']
+
+
+def test_subtitle_save_still_blocks_source_recycling(setup):
+    from bilive.domain.models import SubtitleLine
+    from bilive.jobs.action_jobs import ActionConflict
+
+    settings, wb, fin, queue = setup
+    segment = wb.points('session.mp4', 1, 3, '人工片段', '保留依据')
+    wb.jobs.submit('trash_source', task_id_from_source_relpath('session.mp4'))
+    with pytest.raises(ActionConflict):
+        wb.save_subtitles(segment['segment_id'], 1, [SubtitleLine(1, 0, 1, '字幕')])
+    assert wb.load(segment['segment_id'])['revision'] == 1
 
 
 def run(setup, judge, asr=None):
@@ -215,7 +393,7 @@ def test_room_profile_reaches_judge_metadata_and_burned_style(setup):
     seen=[]
     def judge(**kwargs):
         seen.append(kwargs);r=result();r.description='';return [r]
-    pipeline=AnalysisPipeline(settings,wb,fin,judge=judge,transcribe=lambda video:
+    pipeline=AnalysisPipeline(settings,wb,fin,judge=judge,transcribe=lambda video, **kwargs:
         {'segments':[{'start':0,'end':6 if video.name == 'asr_window.mp4' else 4,'text':'字幕依据'}]})
     rel='123 - 甲/session.mp4';out=pipeline.run(rel,task_id_from_source_relpath(rel))
     assert seen[0]['artist'] == '主播甲' and seen[0]['guidance'] == '保留完整话题'
@@ -248,7 +426,8 @@ def event(start,end):
 
 
 @pytest.mark.parametrize('snap_enabled',[True,False])
-def test_padding_snap_and_subtitle_offset_use_real_media(setup,monkeypatch,snap_enabled):
+@pytest.mark.parametrize('cue_layout', ['single_sentence', 'chat_context'])
+def test_padding_snap_and_subtitle_offset_use_real_media(setup,monkeypatch,snap_enabled,cue_layout):
     import json
     from bilive.analysis import pipeline as module
     settings,wb,fin,q=setup
@@ -266,13 +445,26 @@ def test_padding_snap_and_subtitle_offset_use_real_media(setup,monkeypatch,snap_
     seen=[]
     def asr(video):
         seen.append(_ffprobe_duration(video,[]))
+        if cue_layout == 'chat_context':
+            # Inner boundaries are closer, but must not erase the setup/response.
+            return {'segments': [
+                {'start': .8, 'end': 1.05, 'text': '事情的起因'},
+                {'start': 1.1, 'end': 2.9, 'text': '中间的互动'},
+                {'start': 2.95, 'end': 3.3, 'text': '最后的回应'},
+                {'start': 3.4, 'end': 3.8, 'text': '下一个无关话题'},
+            ]}
         return {'segments':[{'start':0.8,'end':3.3,'text':'完整句子'}]}
     pipeline=AnalysisPipeline(settings,wb,fin,judge=lambda **kw:[result(1.5,3.5)],transcribe=asr)
     out=pipeline.run('session.mp4',task_id_from_source_relpath('session.mp4'))
     s=wb.detail(out['segments'][0])
     assert s['final_valid'] and abs(seen[0]-4) < 0.08
     assert s['source_start'] == pytest.approx(expected_start) and s['source_end'] == pytest.approx(expected_end)
-    assert s['subtitles'][0]['start'] == pytest.approx(0) and s['subtitles'][0]['end'] == pytest.approx(expected_duration)
+    assert s['subtitles'][0]['start'] == pytest.approx(0)
+    assert s['subtitles'][-1]['end'] == pytest.approx(expected_duration)
+    if cue_layout == 'chat_context':
+        assert [line['text'] for line in s['subtitles']] == ['事情的起因', '中间的互动', '最后的回应']
+        assert s['subtitles'][1]['start'] == pytest.approx(1.6-expected_start)
+        assert all(0 <= line['start'] < line['end'] <= expected_duration for line in s['subtitles'])
     assert abs(_ffprobe_duration(Path(s['final_path']),[])-expected_duration) < 0.08
     meta=json.loads(fin.artifact_paths(s['segment_id'])['meta'].read_text(encoding='utf-8'))
     assert meta['source_start'] == pytest.approx(expected_start) and meta['source_end'] == pytest.approx(expected_end)
@@ -410,74 +602,3 @@ def test_alignment_created_duplicate_retains_subtitles_but_does_not_render(setup
     assert wb.detail(loser['segment_id'])['subtitles'] and Path(loser['candidate_path']).exists()
     assert q.list(stage='staged')['total'] == 1 and q.claim_next() is None
     assert out['requires_source_review']
-
-
-@pytest.mark.parametrize('release_after_task', [True, False])
-def test_scene_keeps_one_asr_model_for_candidates_and_formal_recognition(setup, monkeypatch, release_after_task):
-    import sys
-    import types
-    from bilive.vendor.autoslice.mllm_sdk import audio_analyzer as audio
-
-    settings, wb, fin, queue = setup
-    settings.subtitle.asr_device = 'cpu'
-    settings.subtitle.asr_compute_type = 'int8'
-    settings.multi_modal.unload_audio_model_after_analysis = release_after_task
-    loads, recognitions, releases = [], [], []
-
-    class Model:
-        def __init__(self, *args, **kwargs):
-            loads.append(True)
-
-    class Batch:
-        def __init__(self, model):
-            self.model = model
-
-        def transcribe(self, audio_path, **kwargs):
-            recognitions.append(audio_path)
-            cues = [types.SimpleNamespace(start=.2, end=1.8, text='有效字幕', words=[])]
-            if Path(audio_path).read_text() == 'formal':
-                cues.append(types.SimpleNamespace(start=2.2, end=3.8, text='另一条字幕', words=[]))
-            return iter(cues), types.SimpleNamespace(language='zh')
-
-    fake = types.ModuleType('faster_whisper')
-    fake.WhisperModel, fake.BatchedInferencePipeline = Model, Batch
-    monkeypatch.setitem(sys.modules, 'faster_whisper', fake)
-    for key in ('_whisper_model', '_whisper_batch_pipeline', '_whisper_model_key'):
-        monkeypatch.setattr(audio, key, None)
-    monkeypatch.setattr(audio, 'release_gpu_memory', lambda: releases.append(len(recognitions)))
-    monkeypatch.setattr('bilive.worker.preflight.cached_asr_model', lambda settings: wb.videos)
-
-    def extract(*args, **kwargs):
-        path = wb.artifacts / f'audio-{len(recognitions)}.wav'
-        path.write_text('formal' if Path(args[0]).name == 'asr_window.mp4' else 'candidate')
-        return str(path)
-
-    monkeypatch.setattr(audio, 'extract_audio', extract)
-    from bilive.vendor.autoslice.burst_detector import BurstEvent
-    events = [BurstEvent(a+1, a, a+2, 2, 10, 3, 20, burst_start=a+1, burst_end=a+1.2) for a in (0, 2)]
-    monkeypatch.setattr('bilive.analysis.pipeline.detect_bursts', lambda *args, **kwargs: events)
-    # Duplicate review is orthogonal to the model lifecycle under test.
-    monkeypatch.setattr('bilive.vendor.clip_rules._mark_cross_candidate_duplicates', lambda *args: None)
-    pipeline = AnalysisPipeline(settings, wb, fin, judge=lambda **kwargs: [result()])
-    output = pipeline.run('session.mp4', task_id_from_source_relpath('session.mp4'))
-
-    assert output['candidates'] == 2
-    assert len(recognitions) == 4  # Two candidate calls, then two padded formal calls.
-    assert loads == [True]
-    assert releases == ([4] if release_after_task else [])
-    assert (audio._whisper_model is None) == release_after_task
-    assert not list(wb.artifacts.glob('audio-*.wav'))
-
-
-@pytest.mark.parametrize('entry', ['run', 'transcribe_segment', 'retry_judge'])
-def test_asr_task_releases_cached_model_on_exception(monkeypatch, entry):
-    from bilive.vendor.autoslice.mllm_sdk import audio_analyzer as audio
-    for key in ('_whisper_model', '_whisper_batch_pipeline', '_whisper_model_key'):
-        monkeypatch.setattr(audio, key, object())
-    released = []
-    monkeypatch.setattr(audio, 'release_gpu_memory', lambda: released.append(True))
-    pipeline = AnalysisPipeline(Settings(), None, None)
-    with pytest.raises(AttributeError):
-        getattr(pipeline, entry)(*(['source.mp4', 'task'] if entry == 'run' else [None]))
-    assert released == [True]
-    assert audio._whisper_model is None and audio._whisper_batch_pipeline is None

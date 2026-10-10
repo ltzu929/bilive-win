@@ -7,6 +7,8 @@ idle_check_interval = 30
 
 [video]
 min_source_size_mb = 100
+# RTX 4060 hardware encoder; use libx264 on hosts without NVIDIA NVENC.
+encoder = "h264_nvenc"
 
 [slice.burst]
 ratio = 3.0
@@ -47,8 +49,9 @@ unload_audio_model_after_analysis = true
 asr_model = "large-v3"
 asr_device = "cuda"
 asr_compute_type = "float16"
-asr_batch = 8
-asr_cpu_threads = 8
+# Leave resources for interactive desktop use; smaller batches reduce VRAM peaks.
+asr_batch = 2
+asr_cpu_threads = 2
 asr_vad = true
 padding = 6.0
 snap_tolerance = 3.0

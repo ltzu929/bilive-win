@@ -148,6 +148,7 @@ def test_keep_respects_existing_edit_boundaries(env, blocked):
 
 def test_local_transcription_returns_relative_draft_and_preserves_saved_media(env):
     from bilive.analysis.pipeline import AnalysisPipeline
+    from bilive.vendor.autoslice.analysis_result import TranscriptSegment
     c, w, wb, q = env
     s = finalize(c, w, subtitles(c, create(c)))
     final = Path(s['final_path']).read_bytes()
@@ -155,7 +156,8 @@ def test_local_transcription_returns_relative_draft_and_preserves_saved_media(en
     def transcribe(source, **window):
         calls.append((source, window))
         return {'segments': [{'start': 0.1, 'end': 1.8, 'text': '本地识别'}]}
-    w.analysis = AnalysisPipeline(Settings(), wb, w.finalizer, transcribe=transcribe)
+    w.analysis = AnalysisPipeline(Settings(), wb, w.finalizer, transcribe=transcribe,
+        correct=lambda lines, **kw: [TranscriptSegment(v.start, v.end, '校正后的本地识别') for v in lines])
     w.preflight = lambda job: (True, '')
     req = {'action': 'transcribe_subtitles', 'target': s['segment_id'], 'revision': s['revision']}
     queued = c.post('/api/actions', json=req)
@@ -167,7 +169,8 @@ def test_local_transcription_returns_relative_draft_and_preserves_saved_media(en
     job = c.get(f"/api/actions/{queued.json()['job_id']}").json()
     assert job['status'] == 'done', job
     assert calls == [(wb.videos / 'session.mp4', {'start_seconds': 0.5, 'duration_seconds': 2})]
-    assert job['result']['lines'] == [{'index': 1, 'start': 0.1, 'end': 1.8, 'text': '本地识别'}]
+    assert job['result']['lines'] == [{'index': 1, 'start': 0.1, 'end': 1.8, 'text': '校正后的本地识别'}]
+    assert job['result']['correction'] == {'status': 'corrected', 'changed_lines': 1}
     detail = c.get(f"/api/segments/{s['segment_id']}").json()
     assert detail['transcription_job']['result'] == job['result']
     assert detail['revision'] == s['revision'] and detail['subtitles'] == s['subtitles']

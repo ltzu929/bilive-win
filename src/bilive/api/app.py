@@ -91,9 +91,13 @@ async def missing_object(request, exc):
 
 
 @app.exception_handler(ActionConflict)
-@app.exception_handler(LockUnavailable)
 async def conflicting_request(request, exc):
     return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(LockUnavailable)
+async def busy_segment(request, exc):
+    return JSONResponse(status_code=409, content={"detail": "后台正在更新片段数据，请稍后再保存"})
 
 
 @app.exception_handler(DatabaseUnavailable)
@@ -481,8 +485,17 @@ def retry_upload(req: UploadRetryRequest) -> dict[str, Any]:
     return accepted_with_wake({"job_id": job.job_id, "status": job.status.value})
 
 
+@app.post('/api/uploads/cancel')
+def cancel_upload(req: UploadRetryRequest) -> dict[str, Any]:
+    try:
+        return upload_queue.cancel(req.video_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 @app.post("/api/worker/wake")
 def wake_worker():
+    (worker_control.runtime / 'worker-paused').unlink(missing_ok=True)
     return worker_control.wake()
 
 

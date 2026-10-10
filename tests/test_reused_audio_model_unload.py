@@ -26,6 +26,16 @@ def test_transcribe_rejects_removed_asr_engines():
         )
 
 
+def test_unloading_empty_cache_does_not_wait_for_gpu_release(monkeypatch):
+    monkeypatch.setattr(audio_analyzer, '_whisper_model', None)
+    monkeypatch.setattr(audio_analyzer, '_whisper_batch_pipeline', None)
+    monkeypatch.setattr(audio_analyzer, '_whisper_model_key', ('stale',))
+    calls = []
+    monkeypatch.setattr(audio_analyzer, 'release_gpu_memory', lambda: calls.append(True))
+    audio_analyzer.unload_asr_models()
+    assert not calls and audio_analyzer._whisper_model_key is None
+
+
 def test_batched_whisper_falls_back_to_sequential(monkeypatch):
     calls = []
 
@@ -58,7 +68,7 @@ def test_batched_whisper_falls_back_to_sequential(monkeypatch):
     audio_analyzer._whisper_batch_pipeline = None
     audio_analyzer._whisper_model_key = None
 
-    result = audio_analyzer.transcribe_audio_whisper("audio.wav")
+    result = audio_analyzer.transcribe_audio_whisper("audio.wav", cpu_threads=8, batch_size=8)
 
     assert result["transcript"] == "有效字幕。"
     assert result["device"] == "cpu"
@@ -68,6 +78,9 @@ def test_batched_whisper_falls_back_to_sequential(monkeypatch):
     assert calls[1][1]["batch_size"] == 8
     assert calls[1][1]["vad_parameters"]["min_silence_duration_ms"] == 2000
     assert calls[2][0] == "sequential"
+    assert calls[1][1]["word_timestamps"] is True
+    assert calls[2][1]["word_timestamps"] is True
+    assert result["segments"][0]["words"] == []
 
 
 def test_transcribe_loads_cuda_model_with_dll_paths(monkeypatch):
@@ -77,6 +90,7 @@ def test_transcribe_loads_cuda_model_with_dll_paths(monkeypatch):
         start = 0.0
         end = 1.0
         text = "上卡"
+        words = [types.SimpleNamespace(start=0.1, end=0.9, word="上卡")]
 
     class WhisperModel:
         def __init__(self, *args, **kwargs):
@@ -108,13 +122,44 @@ def test_transcribe_loads_cuda_model_with_dll_paths(monkeypatch):
     assert result["mode"] == "sequential"
     assert calls[0][1]["device"] == "cuda"
     assert calls[0][1]["compute_type"] == "float16"
+    assert result["segments"][0]["words"] == [{"start": 0.1, "end": 0.9, "word": "上卡"}]
 
 
-def test_unloading_empty_cache_does_not_wait_for_gpu_release(monkeypatch):
-    monkeypatch.setattr(audio_analyzer, '_whisper_model', None)
-    monkeypatch.setattr(audio_analyzer, '_whisper_batch_pipeline', None)
-    monkeypatch.setattr(audio_analyzer, '_whisper_model_key', ('stale',))
+@pytest.mark.parametrize('mode', ['batched', 'sequential', 'sequential-fallback'])
+def test_hotwords_follow_each_request_in_cached_batch_and_sequential_models(monkeypatch, mode):
     calls = []
-    monkeypatch.setattr(audio_analyzer, 'release_gpu_memory', lambda: calls.append(True))
-    audio_analyzer.unload_asr_models()
-    assert not calls and audio_analyzer._whisper_model_key is None
+    loads = []
+    cue = types.SimpleNamespace(start=0.1, end=0.9, text='有效字幕', words=[])
+
+    class WhisperModel:
+        def __init__(self, *args, **kwargs):
+            loads.append(True)
+
+        def transcribe(self, *args, **kwargs):
+            calls.append(('sequential', kwargs))
+            return iter([cue]), types.SimpleNamespace(language='zh')
+
+    class BatchedInferencePipeline:
+        def __init__(self, model):
+            pass
+
+        def transcribe(self, *args, **kwargs):
+            calls.append(('batched', kwargs))
+            if mode == 'sequential-fallback':
+                raise RuntimeError('isolated batch failure')
+            return iter([cue]), types.SimpleNamespace(language='zh')
+
+    fake = types.ModuleType('faster_whisper')
+    fake.WhisperModel = WhisperModel
+    if mode != 'sequential':
+        fake.BatchedInferencePipeline = BatchedInferencePipeline
+    monkeypatch.setitem(sys.modules, 'faster_whisper', fake)
+    for key in ('_whisper_model', '_whisper_batch_pipeline', '_whisper_model_key'):
+        monkeypatch.setattr(audio_analyzer, key, None)
+    for words in ('主播甲, 白露', '主播乙, 白鹿', None):
+        calls.clear()
+        result = audio_analyzer.transcribe_audio_whisper('audio.wav', hotwords=words)
+        assert result['mode'] == mode and result['segments'][0]['start'] == 0.1
+        assert all(options.get('hotwords') == words for _, options in calls)
+        assert all(options['word_timestamps'] is True for _, options in calls)
+    assert loads == [True]

@@ -7,6 +7,7 @@ const uploadLabels = {
   publishing: "投稿中",
   published: "已发布",
   failed: "失败 / 需核对",
+  cancelled: "已取消",
 };
 const uploadTabs = [
   ["all", "当前任务"],
@@ -14,6 +15,7 @@ const uploadTabs = [
   ["processing", "待执行 / 发布中"],
   ["waiting", "返回成片确认"],
   ["published", "发布历史"],
+  ["cancelled", "已取消"],
 ];
 const uploadGroups = {
   all: [
@@ -28,6 +30,7 @@ const uploadGroups = {
   processing: ["queued", "uploading", "uploaded", "publishing"],
   published: ["published"],
   failed: ["failed"],
+  cancelled: ["cancelled"],
 };
 const publicationView = { tab: "all", offset: 0, selected: null, items: [] };
 const fileName = (value) =>
@@ -36,7 +39,7 @@ const fileName = (value) =>
     .pop();
 const sourceTitle = (value) => fileName(value).replace(/\.mp4$/i, "");
 const uploadTone = (r) =>
-  r.stage === "published"
+  r.stage === 'cancelled' ? 'muted' : r.stage === "published"
     ? "green"
     : ["staged", "failed"].includes(r.stage)
       ? "orange"
@@ -91,6 +94,8 @@ function drawPublish() {
       ? r.remote_filename
         ? "媒体已上传 · 投稿需核对"
         : "上传失败"
+      : r.stage === "cancelled"
+        ? "本地任务已停止 · 成片与上传结果保留"
       : r.stage === "staged"
         ? "审核成片"
         : uploadLabels[r.stage];
@@ -147,6 +152,32 @@ function uploadErrorText(row) {
 }
 function bindPublishDetail(r) {
   if (!r) return;
+  const firstSection = document.querySelector('.detail-panel .detail-section');
+  const cancellable = ['staged', 'queued', 'uploaded', 'failed'].includes(r.stage);
+  if (firstSection && r.stage !== 'published') {
+    const controls = r.stage === 'cancelled'
+      ? '<p class="hint">已取消后续上传和发布，成片与已有上传结果仍保留。取消不会撤回 B 站稿件。</p>'
+      : `<button id="upload-cancel" class="btn btn-secondary btn-block" ${cancellable ? '' : 'disabled'}>取消上传 / 发布</button>${cancellable ? '' : '<p class="hint">正在上传或投稿，请等待当前操作结束后再取消。</p>'}`;
+    firstSection.insertAdjacentHTML('beforebegin', `<section class="detail-section">${controls}</section>`);
+  }
+  const cancel = document.getElementById('upload-cancel');
+  if (cancel) cancel.onclick = async () => {
+    if (!confirm('取消此任务的后续上传和发布？本地成片与已有上传结果会保留；此操作不会撤回 B 站稿件。')) return;
+    cancel.disabled = true;
+    try {
+      await reviewAPI('/api/uploads/cancel', {video_path: r.video_path, stage: r.stage});
+      if (pageKey() !== 'publish') return;
+      publicationView.tab = 'cancelled';
+      publicationView.offset = 0;
+      await renderPublish();
+      setMessage('publish-message', '已取消后续上传和发布。本地成片、已有上传结果和操作记录均已保留。');
+    } catch (e) {
+      if (cancel.isConnected) {
+        setMessage('publish-message', `取消未完成：${e.message}`);
+        cancel.disabled = false;
+      }
+    }
+  };
   const b = document.getElementById("upload-retry");
   b.onclick = async () => {
     b.disabled = true;
@@ -194,7 +225,7 @@ async function renderNativeRooms({ background = false } = {}) {
   const current = beginPage("live");
   const controls = document.querySelector(".room-controls");
   if (controls) liveRooms.controlsOpen = controls.open;
-  if (!background) {
+  if (!background && !document.querySelector('.live-layout')) {
     document.getElementById("main").innerHTML =
       pageHead("直播间", "实时监控直播状态与录制任务") +
       emptyState("正在读取录制器房间…");
@@ -247,6 +278,11 @@ function roomCoverHTML(r) {
 }
 function bindRoomCovers() {
   document.querySelectorAll(".live-room-cover").forEach((img) => {
+    if (img.dataset.coverBound) {
+      if (img.classList.contains('loaded')) img.previousElementSibling?.remove();
+      return;
+    }
+    img.dataset.coverBound = 'true';
     const show = () => {
       img.previousElementSibling?.remove();
       img.classList.add("loaded");
@@ -263,6 +299,13 @@ function bindRoomCovers() {
 function drawNativeRooms() {
   const view = liveRooms,
     row = view.items.find((r) => roomId(r) === view.selected);
+  // Keep decoded images across status refreshes and row selection.
+  const covers = new Map();
+  document.querySelectorAll('.live-room-cover').forEach((img) => {
+    const source = img.getAttribute('src');
+    if (!covers.has(source)) covers.set(source, []);
+    covers.get(source).push(img);
+  });
   // Row selection has no API read; capture the panes before replacing their DOM.
   if (document.getElementById("main").querySelector(".master-scroll"))
     savePageScroll("live");
@@ -289,6 +332,10 @@ function drawNativeRooms() {
       `<label class="field">房间号<input id="room-add-id" type="number" min="1" step="1" aria-label="新增房间号" placeholder="输入 B 站直播间号"></label><p id="room-dialog-message" role="status"></p><div class="dialog-actions"><button class="btn btn-secondary" data-close-dialog>取消</button><button id="room-add" class="btn btn-primary">添加直播间</button></div>`,
     );
   restorePageScroll("live");
+  document.querySelectorAll('.live-room-cover').forEach((img) => {
+    const previous = covers.get(img.getAttribute('src'))?.shift();
+    if (previous) img.replaceWith(previous);
+  });
   bindRoomCovers();
   bindDialogs();
   document.querySelector(".room-controls")?.addEventListener("toggle", (e) => {

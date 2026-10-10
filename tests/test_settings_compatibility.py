@@ -67,15 +67,18 @@ def test_asr_adapter_uses_configured_vad_engine_and_keeps_model_for_task(tmp_pat
     from bilive.worker import preflight
     model=tmp_path/'model';model.mkdir();wave=tmp_path/'audio.wav';wave.write_bytes(b'fixture')
     monkeypatch.setattr(preflight,'cached_asr_model',lambda s:model)
-    monkeypatch.setattr(audio,'extract_audio',lambda path:str(wave))
+    windows=[]
+    monkeypatch.setattr(audio,'extract_audio',lambda path,**kw:windows.append(kw) or str(wave))
     calls=[];unloads=[]
     monkeypatch.setattr(audio,'transcribe_audio_whisper',lambda path,**kw:calls.append(kw) or {'segments':[]})
     monkeypatch.setattr(audio,'unload_asr_models',lambda:unloads.append(True))
     s=Settings();s.multi_modal.whisper_vad_min_silence_ms=750;s.multi_modal.whisper_vad_speech_pad_ms=200
     pipeline=AnalysisPipeline(s,None,None)
-    pipeline._transcribe(tmp_path/'source.mp4')
+    pipeline._transcribe(tmp_path/'source.mp4',hotwords=['白露','匹诺康尼'],start_seconds=2,duration_seconds=3)
     assert calls[0]['engine'] == 'faster-whisper' and calls[0]['model_size'] == str(model)
     assert calls[0]['vad_min_silence_ms'] == 750 and calls[0]['vad_speech_pad_ms'] == 200
+    assert calls[0]['hotwords'] == '白露, 匹诺康尼'
+    assert windows == [{'start_seconds':2,'duration_seconds':3}]
     assert unloads == [] and not wave.exists()
 
 

@@ -57,6 +57,20 @@ class AnalysisPipeline:
         return correct_transcript_segments(segments, **kwargs, base_url=self.settings.mimo.base_url,
                                            model=self.settings.mimo.model, timeout=self.settings.mimo.timeout)
 
+    def _correct_subtitle_lines(self, lines, *, artist, title, profile=None):
+        """Correction may change text only; rejected output leaves input untouched."""
+        from bilive.vendor.autoslice.analysis_result import TranscriptSegment
+        from bilive.lifecycle.profiles import subtitle_hotwords_for_profile
+        timestamps = [(v.start, v.end) for v in lines]
+        corrected = self.correct([TranscriptSegment(v.start, v.end, v.text) for v in lines],
+                                 artist=artist, title=title,
+                                 hotwords=subtitle_hotwords_for_profile(profile or {}))
+        if (len(corrected) != len(lines) or any(
+                (v.start, v.end) != stamp or not isinstance(v.text, str) or not v.text.strip()
+                for stamp, v in zip(timestamps, corrected))):
+            raise PipelineError('subtitle correction changed timestamps or cue count')
+        return [SubtitleLine(v.index, c.start, c.end, c.text) for v, c in zip(lines, corrected)]
+
     def _judge(self, **kwargs):
         from bilive.vendor.autoslice.mllm_sdk.mimo_video import judge_candidate_clips_with_mimo, encode_video_for_mimo
         m = self.settings.mimo
@@ -64,7 +78,14 @@ class AnalysisPipeline:
             media_resolution=m.media_resolution, timeout=m.timeout, max_base64_bytes=m.max_base64_bytes,
             encoder=lambda *args, **kw: encode_video_for_mimo(*args, **kw, semaphore=self.encode_limit))
 
-    def _transcribe(self, video: Path, **window) -> dict:
+    def _transcribe_for_profile(self, video, profile, **window):
+        from bilive.lifecycle.profiles import subtitle_hotwords_for_profile
+        names = subtitle_hotwords_for_profile(profile)
+        if names:
+            window['hotwords'] = names
+        return self.transcribe(video, **window)
+
+    def _transcribe(self, video: Path, *, hotwords=None, **window) -> dict:
         from bilive.vendor.autoslice.mllm_sdk.audio_analyzer import extract_audio, transcribe_audio_whisper
         sub = self.settings.subtitle
         from bilive.worker.preflight import cached_asr_model
@@ -78,7 +99,8 @@ class AnalysisPipeline:
                 compute_type=sub.asr_compute_type, batch_size=sub.asr_batch, cpu_threads=sub.asr_cpu_threads,
                 vad_filter=sub.asr_vad,engine=self.settings.multi_modal.whisper_engine,
                 vad_min_silence_ms=self.settings.multi_modal.whisper_vad_min_silence_ms,
-                vad_speech_pad_ms=self.settings.multi_modal.whisper_vad_speech_pad_ms)
+                vad_speech_pad_ms=self.settings.multi_modal.whisper_vad_speech_pad_ms,
+                hotwords=', '.join(hotwords or []) or None)
         finally:
             audio.unlink(missing_ok=True)
 
@@ -96,8 +118,11 @@ class AnalysisPipeline:
             start, end = s['source_start'], s['source_end']
         if end > _ffprobe_duration(source, []) + 0.01:
             raise PipelineError('range exceeds source duration')
+        from bilive.lifecycle.profiles import profile_for_source
+        profile = profile_for_source(wb.videos, s['source_relpath'])
         with self.asr_lock:
-            transcript = self.transcribe(source, start_seconds=start, duration_seconds=end-start)
+            transcript = self._transcribe_for_profile(source, profile,
+                start_seconds=start, duration_seconds=end-start)
         if transcript.get('error'):
             raise PipelineError(f"本地字幕识别失败：{transcript['error']}")
         lines = []
@@ -118,9 +143,21 @@ class AnalysisPipeline:
         if not lines:
             raise PipelineError('本地模型没有返回有效字幕，请重试或试听后手工添加字幕')
         clamp_subtitle_times(lines, end-start)
+        correction = {'status': 'disabled', 'changed_lines': 0}
+        if self.settings.subtitle.light_correct:
+            try:
+                corrected = self._correct_subtitle_lines(lines,
+                    artist=profile.get('display_name') or Path(s['source_relpath']).parent.name,
+                    title=s.get('title', ''), profile=profile)
+                changed = sum(a.text != b.text for a, b in zip(lines, corrected))
+                lines = corrected
+                correction = {'status': 'corrected' if changed else 'unchanged', 'changed_lines': changed}
+            except Exception:
+                correction = {'status': 'failed_original_retained', 'changed_lines': 0}
         with wb.lock():
             wb.check_revision(wb.load(job.target), job.payload['revision'])
-        return {'ok': True, 'revision': job.payload['revision'], 'lines': [asdict(line) for line in lines]}
+        return {'ok': True, 'revision': job.payload['revision'], 'lines': [asdict(line) for line in lines],
+                'correction': correction}
 
     @_release_asr_after_task
     def run(self, source_relpath: str, task_id: str) -> dict:
@@ -137,50 +174,49 @@ class AnalysisPipeline:
         history = {"source_relpath":source_relpath, "candidates":[], "segments":[], "status":"processing"}
         path = source.with_suffix(source.suffix + ".task.json")
         self._save_history(path, history)
-        with self.workbench.lock():
-            bindings = []
-            for event in bursts:
-                candidate = self.workbench.artifacts / "candidates" / task_id / f"candidate-{round(event.start*1000)}-{round(event.end*1000)}.mp4"
-                entry = {**asdict(event), "path":str(candidate), "state":"processing", "segments":[]}
-                history["candidates"].append(entry)
-                bindings.append((event, candidate, entry))
+        bindings = []
+        for event in bursts:
+            candidate = self.workbench.artifacts / "candidates" / task_id / f"candidate-{round(event.start*1000)}-{round(event.end*1000)}.mp4"
+            entry = {**asdict(event), "path":str(candidate), "state":"processing", "segments":[]}
+            history["candidates"].append(entry)
+            bindings.append((event, candidate, entry))
+        self._save_history(path, history)
+        with ThreadPoolExecutor(max_workers=max(1, int(self.settings.mimo.request_concurrency))) as pool:
+            futures = [pool.submit(self._prepare, source, source_relpath, event, candidate, entry, danmaku, profile)
+                       for event, candidate, entry in bindings]
+            prepared = [future.result() for future in futures]
+        from bilive.vendor.clip_rules import _mark_cross_candidate_duplicates
+        items = [(i, SimpleNamespace(context_start=event.start, context_end=event.end), result)
+                 for i, ((event, _, _), result) in enumerate(zip(bindings, prepared))]
+        _mark_cross_candidate_duplicates(items, source_relpath, self._quality_review)
+        ordered = sorted(zip(bindings, prepared), key=lambda pair:
+            not any(r.judge_status == 'keep' and r.retain_recommendation for r in pair[1].get('results') or []))
+        for (event, candidate, entry), prepared_result in ordered:
+            results = prepared_result.get('results', [])
+            entry['judgments'] = [asdict(r) for r in results or []]
+            if prepared_result.get('error'):
+                entry.update(state='failed', reason=prepared_result['error'])
+            else:
+                try:
+                    if not results:
+                        entry.update(state='review', reason='empty judgment requires manual review')
+                    for result in sorted(results, key=lambda r:not (r.judge_status == 'keep' and r.retain_recommendation)):
+                        self._result(result, source_relpath, source, event, candidate, entry, history,
+                                     prepared_result.get('transcript'), duration)
+                    if (len(results) == 1 and results[0].judge_status == 'drop'
+                            and not results[0].retain_recommendation
+                            and results[0].raw_model_response.get('decision') == 'drop'
+                            and entry['state'] != 'review'):
+                        entry['state'] = 'drop'
+                        candidate.unlink(missing_ok=True)
+                    elif results and entry['state'] != 'review':
+                        entry['state'] = 'reviewed'
+                except Exception as exc:
+                    entry.update(state='failed', reason=type(exc).__name__)
             self._save_history(path, history)
-            with ThreadPoolExecutor(max_workers=max(1, int(self.settings.mimo.request_concurrency))) as pool:
-                futures = [pool.submit(self._prepare, source, source_relpath, event, candidate, entry, danmaku, profile)
-                           for event, candidate, entry in bindings]
-                prepared = [future.result() for future in futures]
-            from bilive.vendor.clip_rules import _mark_cross_candidate_duplicates
-            items = [(i, SimpleNamespace(context_start=event.start, context_end=event.end), result)
-                     for i, ((event, _, _), result) in enumerate(zip(bindings, prepared))]
-            _mark_cross_candidate_duplicates(items, source_relpath, self._quality_review)
-            ordered = sorted(zip(bindings, prepared), key=lambda pair:
-                not any(r.judge_status == 'keep' and r.retain_recommendation for r in pair[1].get('results') or []))
-            for (event, candidate, entry), prepared_result in ordered:
-                results = prepared_result.get('results', [])
-                entry['judgments'] = [asdict(r) for r in results or []]
-                if prepared_result.get('error'):
-                    entry.update(state='failed', reason=prepared_result['error'])
-                else:
-                    try:
-                        if not results:
-                            entry.update(state='review', reason='empty judgment requires manual review')
-                        for result in sorted(results, key=lambda r:not (r.judge_status == 'keep' and r.retain_recommendation)):
-                            self._result(result, source_relpath, source, event, candidate, entry, history,
-                                         prepared_result.get('transcript'), duration)
-                        if (len(results) == 1 and results[0].judge_status == 'drop'
-                                and not results[0].retain_recommendation
-                                and results[0].raw_model_response.get('decision') == 'drop'
-                                and entry['state'] != 'review'):
-                            entry['state'] = 'drop'
-                            candidate.unlink(missing_ok=True)
-                        elif results and entry['state'] != 'review':
-                            entry['state'] = 'reviewed'
-                    except Exception as exc:
-                        entry.update(state='failed', reason=type(exc).__name__)
-                self._save_history(path, history)
-            history['status'] = 'done'
-            history['requires_source_review'] = not bursts or any(c['state'] in {'failed','review'} for c in history['candidates'])
-            self._save_history(path, history)
+        history['status'] = 'done'
+        history['requires_source_review'] = not bursts or any(c['state'] in {'failed','review'} for c in history['candidates'])
+        self._save_history(path, history)
         return {'ok':True,'candidates':len(bursts),'segments':history['segments'],
                 'requires_source_review':history['requires_source_review']}
 
@@ -194,7 +230,7 @@ class AnalysisPipeline:
             if self.settings.analysis.pre_judge_asr:
                 try:
                     with timed_stage(entry,'auxiliary_asr'), self.asr_lock:
-                        transcript = self.transcribe(candidate)
+                        transcript = self._transcribe_for_profile(candidate, profile)
                     segments = transcript.get('segments', [])
                     if transcript.get('error') or not any(isinstance(v.get('text'),str) and v['text'].strip() for v in segments) or any(
                             not isinstance(v.get('text'),str)
@@ -212,12 +248,27 @@ class AnalysisPipeline:
                 danmaku_text='\n'.join(f'{t-event.start:.2f}s {text}' for t,text in danmaku if event.start <= t <= event.end),
                 candidate_duration=event.end-event.start,candidate_start=event.start,
                 candidate_core_start=event.burst_start,candidate_core_end=event.burst_end,
-                candidate_transcript=(transcript or {}).get('transcript','')[:self.settings.analysis.asr_prompt_max_chars])
+                candidate_transcript=self._judge_transcript(transcript))
             return {'results':results,'transcript':transcript}
         except Exception as exc:
             return {'error':type(exc).__name__}
         finally:
             entry['prepare_ms'] = round((time.perf_counter()-started)*1000)
+
+    def _judge_transcript(self, transcript):
+        """Keep complete timestamped cues within the auxiliary prompt budget."""
+        cues = []
+        remaining = self.settings.analysis.asr_prompt_max_chars
+        for segment in (transcript or {}).get('segments', []):
+            if not segment['text'].strip():
+                continue
+            cue = f"{segment['start']:.2f}–{segment['end']:.2f}s {segment['text'].strip()}"
+            cost = len(cue) + bool(cues)
+            if cost > remaining:
+                break
+            cues.append(cue)
+            remaining -= cost
+        return '\n'.join(cues)
 
     def _quality_review(self, result):
         quality = (result.quality_score,result.completeness_score,result.confidence)
@@ -297,6 +348,12 @@ class AnalysisPipeline:
             entry.update(state="review", reason="invalid judgment range")
             return
         sid = segment_id_from_source_and_range(rel, round(start*1000), round(end*1000))
+        with self.workbench.segment_lock(sid):
+            return self._persist_result(sid, start, end, result, rel, source, event,
+                                        candidate, entry, history, pre_asr, duration)
+
+    def _persist_result(self, sid, start, end, result, rel, source, event,
+                        candidate, entry, history, pre_asr, duration):
         entry["segments"].append(sid)
         duplicate = any(abs(s["source_start"]-start) < 0.5 and abs(s["source_end"]-end) < 0.5
                         for s in self.workbench.list(rel))
@@ -343,18 +400,13 @@ class AnalysisPipeline:
             # candidate timestamps are never treated as segment timestamps.
             s['processing_stage'] = 'formal_asr'
             with timed_stage(s,'formal_asr'):
-                start, end, lines, alignment = self._formal_subtitles(source, sid, start, end, duration, event, pre_asr)
+                start, end, lines, alignment = self._formal_subtitles(source, sid, start, end, duration, event, pre_asr,
+                                                                    profile=profile)
             if self.settings.subtitle.light_correct:
-                from bilive.vendor.autoslice.analysis_result import TranscriptSegment
-                original = [TranscriptSegment(v.start,v.end,v.text) for v in lines]
-                timestamps = [(v.start,v.end) for v in original]
                 try:
                     with timed_stage(s,'correction'):
-                        corrected = self.correct(original,artist=profile.get('display_name') or Path(rel).parent.name,title=result.title)
-                    if (len(corrected) != len(original) or any((b.start,b.end) != a or not isinstance(b.text,str) or not b.text.strip()
-                            for a,b in zip(timestamps,corrected))):
-                        raise PipelineError('subtitle correction changed timestamps or cue count')
-                    lines = [SubtitleLine(i+1,v.start,v.end,v.text) for i,v in enumerate(corrected)]
+                        lines = self._correct_subtitle_lines(lines,
+                            artist=profile.get('display_name') or Path(rel).parent.name, title=result.title, profile=profile)
                     alignment['correction'] = 'completed'
                 except Exception:
                     alignment['correction'] = 'failed_original_retained'
@@ -404,7 +456,7 @@ class AnalysisPipeline:
             'timings':s.get('timings',{}),
             'duplicate_of':s.get('duplicate_of'),'duplicate_reason':s.get('duplicate_reason')})
 
-    def _formal_subtitles(self, source, sid, start, end, duration, event, pre_asr):
+    def _formal_subtitles(self, source, sid, start, end, duration, event, pre_asr, *, profile=None):
         from bilive.vendor.clip_rules import snap_trim_to_segments, _slice_segments_to_trim
         from bilive.vendor.autoslice.analysis_result import TranscriptSegment, TrimSuggestion
         padding = max(0.0, float(self.settings.subtitle.padding))
@@ -423,7 +475,7 @@ class AnalysisPipeline:
                 self._save_history(binding,key)
             ensure_raw_cut(source, padded, window_start, window_end, [])
             with self.asr_lock:
-                transcript = self.transcribe(padded)
+                transcript = self._transcribe_for_profile(padded, profile or {})
             origin, window_duration = window_start, window_end-window_start
         segments = []
         if transcript.get('error'):
@@ -441,7 +493,8 @@ class AnalysisPipeline:
             raise PipelineError('本地模型没有返回有效字幕，请重试或试听后手工添加字幕')
         snapped = TrimSuggestion(start,end,'selected source range')
         if self.settings.subtitle.snap_enabled:
-            snapped = snap_trim_to_segments(snapped,segments,max(0.0,float(self.settings.subtitle.snap_tolerance)))
+            snapped = snap_trim_to_segments(snapped,segments,max(0.0,float(self.settings.subtitle.snap_tolerance)),
+                                            outward_only=True)
         if not (0 <= snapped.trim_start < snapped.trim_end <= duration):
             raise PipelineError('invalid snapped source range')
         _, sliced = _slice_segments_to_trim(segments, snapped)

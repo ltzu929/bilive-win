@@ -22,6 +22,14 @@ def profile_for_source(videos: Path, rel: str) -> dict:
     return store.read_streamer_profile(videos, room) if room else {}
 
 
+def subtitle_hotwords_for_profile(profile: dict) -> list[str]:
+    """Reuse confirmed profile names without learning from generated subtitles."""
+    names = [profile.get('display_name', ''), *profile.get('aliases', []),
+             *profile.get('subtitle_hotwords', [])]
+    return list(dict.fromkeys(name.strip() for name in names
+                             if isinstance(name, str) and name.strip()))
+
+
 def record_review(wb, rel: str, task: str, segments: list[dict], note: str):
     room = room_from_source(rel)
     if not room:

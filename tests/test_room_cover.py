@@ -6,6 +6,14 @@ from fastapi.testclient import TestClient
 from bilive.recorder.cover import CoverUnavailable, read_cover
 
 
+@pytest.fixture(autouse=True)
+def isolated_cover_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv('BILIVE_RUNTIME_DIR', str(tmp_path))
+    read_cover.cache_clear()
+    yield
+    read_cover.cache_clear()
+
+
 @pytest.mark.parametrize('url', [
     'http://i0.hdslb.com/bfs/live/cover.jpg',
     'https://127.0.0.1/bfs/live/cover.jpg',
@@ -43,6 +51,25 @@ def test_cover_direct_read_and_cache(monkeypatch):
     assert read_cover(url) == (b'public image', 'image/jpeg')
     assert calls == [url + '@840w_472h_1c.webp']
     read_cover.cache_clear()
+    # A fresh process's empty memory cache can still reuse the disk copy.
+    assert read_cover(url) == (b'public image', 'image/jpeg')
+    assert len(calls) == 1
+    # A changed cover URL must fetch the new image.
+    assert read_cover(url.replace('isolated', 'changed')) == (b'public image', 'image/jpeg')
+    assert len(calls) == 2
+
+
+def test_disk_cache_is_bounded_and_disk_failure_does_not_break_image(monkeypatch, tmp_path):
+    from bilive.recorder import cover
+    for index in range(35):
+        cover._save_disk_cover(str(index), b'image', 'image/webp')
+    assert len(list(cover.cover_cache_dir().glob('*.webp'))) == 32
+    assert not list(cover.cover_cache_dir().glob('*.tmp'))
+    blocked = tmp_path / 'file-not-directory'
+    blocked.write_bytes(b'file')
+    monkeypatch.setenv('BILIVE_RUNTIME_DIR', str(blocked))
+    cover._save_disk_cover('blocked', b'image', 'image/webp')
+    assert cover._read_disk_cover('blocked') is None
 
 
 @pytest.mark.parametrize('status,mime,body', [

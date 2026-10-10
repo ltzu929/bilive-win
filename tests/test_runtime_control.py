@@ -18,15 +18,23 @@ from bilive.worker.runtime import ConsumerProcess, create_worker_app
 from bilive.worker.runner import Worker
 
 
-def test_dashboard_rejects_foreign_origin_before_runtime_action(monkeypatch):
+def test_dashboard_rejects_foreign_origin_before_runtime_action(monkeypatch, tmp_path):
     api = importlib.import_module('bilive.api.app')
     calls = []
-    monkeypatch.setattr(api, 'worker_control', SimpleNamespace(wake=lambda:calls.append('wake') or {'state':'starting'}))
+    monkeypatch.setattr(api, 'worker_control', SimpleNamespace(runtime=tmp_path,
+        wake=lambda:calls.append('wake') or {'state':'starting'}))
     client = TestClient(api.app)
     assert client.post('/api/worker/wake', headers={'Origin':'https://foreign.invalid'}).status_code == 403
     assert not calls
     assert client.post('/api/worker/wake', headers={'Origin':'http://testserver'}).status_code == 200
     assert calls == ['wake']
+
+
+def test_user_pause_blocks_automatic_worker_wake(tmp_path, monkeypatch):
+    control = WorkerControl(tmp_path, tmp_path)
+    (tmp_path / 'worker-paused').write_text('user pause')
+    monkeypatch.setattr(control, 'status', lambda: pytest.fail('paused wake must not contact runtime'))
+    assert control.wake()['state'] == 'paused'
 
 
 def test_config_diagnostics_are_read_only_and_do_not_expose_credentials(tmp_path, monkeypatch):

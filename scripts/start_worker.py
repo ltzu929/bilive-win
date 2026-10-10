@@ -23,6 +23,23 @@ from bilive.lifecycle.review import SourceReview
 
 
 def main() -> None:
+    # The recorder can request a wake every minute. Honor an explicit user pause
+    # even when that long-running caller still has an older WorkerControl loaded.
+    if (Path(os.environ.get('BILIVE_RUNTIME_DIR', '.runtime')) / 'worker-paused').exists():
+        print('Worker paused by user; pending tasks preserved.')
+        return
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.SetPriorityClass.restype = wintypes.BOOL
+        process = kernel32.GetCurrentProcess()
+        if not kernel32.SetPriorityClass(process, 0x00004000):
+            raise ctypes.WinError(ctypes.get_last_error())
+
     parser = argparse.ArgumentParser(description="Bilive Windows Worker")
     parser.add_argument("--videos", type=Path, default=None)
     parser.add_argument("--jobs", type=Path, default=None)

@@ -33,6 +33,7 @@ class ActionJobStatus(str, Enum):
 
 
 class UploadStage(str, Enum):
+    CANCELLED = "cancelled"
     STAGED = "staged"
     QUEUED = "queued"
     UPLOADING = "uploading"

@@ -23,7 +23,9 @@ def _has_ffmpeg() -> bool:
 
 
 @pytest.fixture
-def media_env(tmp_path: Path):
+def media_env(tmp_path: Path, monkeypatch):
+    # Software path must remain usable on CI hosts without NVIDIA hardware.
+    monkeypatch.setenv("BILIVE_VIDEO_ENCODER", "libx264")
     videos = tmp_path / "Videos"
     artifacts = tmp_path / "artifacts"
     videos.mkdir()
@@ -168,3 +170,17 @@ def test_approve_publish_activates_upload_queue(media_env):
     assert done.result["upload_stage"] == "queued"
     row = media_env["uploads"].get_by_path(done.result["video_path"])
     assert row and row["stage"] == "queued"
+
+
+@pytest.mark.skipif(not __import__('shutil').which('nvidia-smi'), reason='NVIDIA hardware unavailable')
+def test_nvenc_cut_and_subtitle_burn_preserve_duration_and_audio(media_env, monkeypatch):
+    monkeypatch.setenv('BILIVE_VIDEO_ENCODER', 'h264_nvenc')
+    media_env['subs'].save('gpu', 2.0, [SubtitleLine(1, 0, 1.8, '硬件编码字幕')], revision=1)
+    result = media_env['fin'].finalize('gpu', media_env['rel'], 1.0, 3.0, revision=1)
+    import json
+    info = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_streams',
+        '-show_format', '-of', 'json', result.final_path]))
+    assert abs(float(info['format']['duration']) - 2.0) < 0.15
+    video = next(s for s in info['streams'] if s['codec_type'] == 'video')
+    assert (video['codec_name'], video['pix_fmt']) == ('h264', 'yuv420p')
+    assert any(s['codec_type'] == 'audio' for s in info['streams'])

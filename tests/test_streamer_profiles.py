@@ -91,3 +91,35 @@ def test_profile_api_persistence_and_cross_origin_protection(tmp_path,monkeypatc
         assert client.get(url).json()['profile']['display_name'] == '主播甲'
         assert client.post(url,json={'display_name':'覆盖'},headers={'Origin':'https://foreign.invalid'}).status_code == 403
         assert client.get('/api/streamers/123/experiences?limit=101').status_code == 422
+
+
+def test_subtitle_hotwords_roundtrip_room_isolation_and_clear(tmp_path, monkeypatch):
+    import importlib
+    from bilive.lifecycle.profiles import subtitle_hotwords_for_profile
+    api = importlib.import_module('bilive.api.app')
+    monkeypatch.setattr(api.workbench, 'videos', tmp_path / 'Videos')
+    with TestClient(api.app) as client:
+        url = '/api/streamers/123/profile'
+        assert client.get(url).json()['profile']['subtitle_hotwords'] == []
+        assert not api.workbench.videos.exists()
+        saved = client.post(url, json={'display_name': '主播甲', 'aliases': ['甲甲'],
+            'subtitle_hotwords': [' 白露 ', '', '匹诺康尼', '白露', '主播甲']})
+        assert saved.status_code == 200
+        profile = client.get(url).json()['profile']
+        assert profile['subtitle_hotwords'] == ['白露', '匹诺康尼', '主播甲']
+        assert subtitle_hotwords_for_profile(profile) == ['主播甲', '甲甲', '白露', '匹诺康尼']
+        assert client.get('/api/streamers/456/profile').json()['profile']['subtitle_hotwords'] == []
+        assert client.post(url, json={'default_description': '保留词库'}).status_code == 200
+        assert client.get(url).json()['profile']['subtitle_hotwords'] == profile['subtitle_hotwords']
+        assert client.post(url, json={'subtitle_hotwords': []}).status_code == 200
+        assert client.get(url).json()['profile']['subtitle_hotwords'] == []
+
+
+@pytest.mark.parametrize('invalid', ['白露', None, [1], ['白露', {}], ['白露\n白鹿'], ['白露\x00']])
+def test_invalid_subtitle_hotwords_do_not_partially_update_profile(tmp_path, invalid):
+    profiles.patch_streamer_profile(tmp_path, '123', {'display_name': '主播甲', 'subtitle_hotwords': ['白露']})
+    path = profiles.streamer_state_path(tmp_path, '123')
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match='字幕专名'):
+        profiles.patch_streamer_profile(tmp_path, '123', {'display_name': '覆盖', 'subtitle_hotwords': invalid})
+    assert path.read_bytes() == before

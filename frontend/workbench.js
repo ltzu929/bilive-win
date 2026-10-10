@@ -902,7 +902,15 @@ function drawManualWorkbench() {
       document.getElementById("review-finish").disabled = true;
     } catch (err) {
       if (!stillHere()) return;
-      e.textContent = `终审未完成：${err.message}`;
+      const reasons = {
+        'no-content conflicts with retained segments': '本场仍有保留的片段，不能确认“本场无可保留内容”。请取消勾选；如果确实不保留任何内容，请先废弃所有片段。',
+        'all retained segments need a current approved final': '还有保留的片段未完成审核。请逐个检查，生成当前版本的成片并允许发布，或废弃不保留的片段。',
+        'explicit no-content confirmation required': '本场没有片段。请确认确实没有可保留的内容后，勾选“确认本场无可保留内容”。',
+        'unresolved candidates require explicit no-content confirmation': '还有未处理的候选。请先检查候选并补选需要保留的片段；确认没有可保留内容后，再勾选“确认本场无可保留内容”。',
+        'source analysis is still active': '本场 AI 分析尚未结束，请等待分析完成后再审核。',
+        'source has an active task': '本场还有排队中或正在执行的任务，请等待任务结束后再审核。',
+      };
+      e.textContent = `终审未完成：${reasons[err.message] || err.message}`;
     }
   };
   for (const id of ["review-analyze", "review-analyze-now"]) {
@@ -1407,6 +1415,8 @@ async function loadStreamerProfile() {
             `<p><label>${label}<input style="width:100%" data-profile="${key}" value="${htmlEscape(Array.isArray(p[key]) ? p[key].join(",") : p[key])}"></label></p>`,
         )
         .join("")}
+      <p><label for="profile-subtitle-hotwords">字幕专名（每行一个）</label><textarea id="profile-subtitle-hotwords" style="width:100%;min-height:120px" data-profile="subtitle_hotwords" aria-describedby="subtitle-hotwords-help" placeholder="常见联动主播名&#10;角色名&#10;游戏名">${htmlEscape((p.subtitle_hotwords || []).join("\n"))}</textarea></p>
+      <p id="subtitle-hotwords-help" class="hint">填写正确名称，自动切片和手动识别字幕共用；自动包含上方的主播显示名和别名。常用专名放在前面，避免填写大段说明。修改后用于下一次识别，已有字幕需重新识别。</p>
       ${[
         ["default_description", "默认简介"],
         ["approved_guidance", "已批准的人工指导"],
@@ -1457,7 +1467,9 @@ async function loadStreamerProfile() {
         document.querySelectorAll("[data-profile]").forEach((el) => {
           const key = el.dataset.profile,
             value = el.value;
-          payload[key] = ["aliases", "default_tags"].includes(key)
+          payload[key] = key === "subtitle_hotwords"
+            ? value.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+            : ["aliases", "default_tags"].includes(key)
             ? value
                 .split(/[,，]/)
                 .map((s) => s.trim())
