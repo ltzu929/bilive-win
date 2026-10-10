@@ -1,0 +1,177 @@
+# 使用说明
+
+日常只需读这一份：启动与配置、审核与发布、维护与验证。
+
+## 运行与配置
+
+适用：Windows 单机 Bilive。本文按 2026-10-10 的代码入口整理，不表示本机服务已经安装或正在运行。
+
+### 安装与启动
+
+需要 uv、Git 和 FFmpeg。录制器与工作台使用独立环境：录制器为 Python 3.10 / blrec 2.0.0b4 / FastAPI 0.88；工作台与 Worker 使用 `.venv-win`。
+
+```powershell
+cd D:\bilive
+.\setup_windows_workbench_env.ps1
+.\setup_windows_recorder_env.ps1
+```
+
+已有本机配置时，双击 `启动Bilive.cmd` 或运行 `./start_bilive.ps1`。它在后台启动缺失的工作台、Worker 和录制器，打开工作台；发现其他服务占用端口时拒绝覆盖。日志在 `logs/startup/`。
+
+也可分别运行：
+
+```powershell
+.\start_windows_dashboard.ps1
+.\start_windows_recorder.ps1
+.\start_pipeline.ps1
+```
+
+始终从项目根目录启动。日常提交任务会按需唤醒 Worker，空闲默认 900 秒退出。`.runtime/worker-paused` 存在时禁止自动唤醒，待处理任务保留；通过工作台显式启动 Worker 解除暂停。
+
+| 地址 | 用途 |
+|---|---|
+| `http://127.0.0.1:2233/workbench/` | 工作台；2233 根地址也跳转到此处 |
+| `http://127.0.0.1:2233/tasks` | blrec 原生录制管理 |
+| `http://127.0.0.1:2234/` | 工作台直接入口与轻接口 |
+| `http://127.0.0.1:2235/health` | 本机 Worker 健康状态 |
+
+2233 的 `/studio-api/` 同源代理到 2234，`/api/v1/` 保留给 blrec。关闭网页不会停止后台录制。
+
+### 配置入口与生效
+
+支持的环境覆盖优先于配置；`BILIVE_CONFIG` 指定服务配置文件，未指定时读取 `bilive-server.toml`。`.secrets/env` 只填充尚未设置的环境变量。
+
+| 文件 | 用途 |
+|---|---|
+| `bilive-server.toml` | 入库服务配置模板 |
+| `.secrets/runtime.toml` | 本机服务配置，需通过 `BILIVE_CONFIG` 指定 |
+| `settings.toml` | 本机 blrec 配置；模板为 `settings.example.toml` |
+| `.secrets/env` | 本机环境与 `BLREC_API_KEY`、`MIMO_API_KEY` 等凭据 |
+| `.secrets/bilibili.cookie` | 录制/投稿 Cookie |
+
+机器路径、凭据和运行数据均不入库。设置页统一保存多分区草稿，保留 TOML 注释与无关字段；凭据不进入网页编辑接口。自动分析、字幕样式、发布默认和清理策略按现有动态读取机制生效；模型、路径和运行参数按页面提示重启对应服务。重启前让活跃任务完成。
+
+默认运行目录为 `Videos`、`logs`、`artifacts`、`.bilive-jobs`，上传库为 `src/db/data.db`。隔离运行支持 `BILIVE_VIDEOS_DIR`、`BILIVE_LOG_DIR`、`BILIVE_DB_PATH`、`BILIVE_ARTIFACTS_DIR`、`BILIVE_JOBS_DIR`；API 与 Worker 必须使用同一组目录。
+
+旧 `slice.multi_modal` Whisper 参数、`slice.subtitle` 样式/校正参数和 `slice.analysis` 对齐参数仍兼容；新版显式键优先，支持的环境覆盖仍优先。`dashboard.allowed_hosts` 与 `BILIVE_DASHBOARD_ALLOWED_HOSTS` 扩展允许的 Host，不放宽同源写入规则。
+
+### 模型、性能与网络
+
+视频判断与字幕校正默认使用 `mimo-v2.6-flash`，共用 `slice.mimo.base_url` 和 `slice.mimo.model`；两处请求显式关闭思考，限制 `max_completion_tokens=2048`。ASR 使用本地 faster-whisper large-v3，默认 CUDA/float16，批量 2、CPU 线程 2；不隐式下载模型。设置页只做轻量诊断，Worker 正式分析前实际加载模型并执行短推理预检。
+
+MiMo 请求与分析副本编码并发分别配置。Whisper 在同一场分析中复用；启用 `unload_audio_model_after_analysis` 时在整场任务结束或异常退出后释放，单独字幕识别和重新判断在各自任务后释放。
+
+Worker 默认低于正常优先级；项目 FFmpeg 转码串行，软件解码、编码与滤镜线程上限为 4。裁剪和烧录读取 `[video].encoder`：代码默认 `libx264`，仓库模板为 `h264_nvenc`，环境覆盖为 `BILIVE_VIDEO_ENCODER`。NVENC 使用 p5/VBR CQ 26，输出 yuv420p H.264；硬件不可用报告失败，不自动重复转码。CQ 与 x264 CRF 不等价。
+
+录制器、工作台、Worker 和上传进程启动时清除本进程代理变量并设置 `NO_PROXY=*`，不修改系统代理或其他应用。TUN/透明代理需要在代理软件中单独保持 Bilive 流量直连。
+
+后续模型研究见 [MiMo 优化方向](../development/optimization.md#mimo-后续优化方向)。
+
+---
+
+## 审核、字幕与发布
+
+### 从录播到候选
+
+直播间页管理 blrec 房间配置；录制结束后持久化转封装任务，验证 MP4 成功后才删除 FLV。默认不自动分析。设置中的“录制结束后自动 AI 切片”开启后只作用于新完成录播，不追溯历史场次；关闭会取消等待中的自动分析，已开始任务完成当前分析。
+
+在录播库选择场次，点击“AI 分析本场录播”。源 MP4 需要同名 XML 弹幕；缺少凭据、依赖或本地模型时任务保留 pending。可取消等待或跳过分析，跳过仍需要整场人工审核。
+
+分析状态展示提交、排队、阶段耗时及候选数。未召回候选只表示弹幕召回没有结果，不能解释为 AI 看完整场后确认无内容。“分析证据与占用”只读历史、候选密度、阶段错误与工件，不触发新分析。
+
+### 审核与补漏
+
+录播库以“候选 → 字幕 → 成片”组织同一场录播，允许返回修改。候选保留或废弃后自动进入下一未审核项；人工补片保存源区间与依据。
+
+只有明确模型 `drop` 才允许自动删候选；低分、缺分、空结果、重复和技术失败保留必要材料待人工。废弃人工片段会撤回未批准暂存并阻止继续生成或发布，源视频和审核记录保留；原因选填。已批准或有活跃任务的片段仍受保护。
+
+“重新判断”只针对原候选取得新建议并独立保存。原范围、字幕、成片和发布许可保留；选择建议只填写编辑草稿，仍须人工保存和生成。
+
+### 字幕与成片
+
+字幕时间相对当前片段起点。保存使用版本校验；浏览器按场次/片段保存未提交草稿。人工识别只返回可核对草稿，不直接覆盖旧字幕；轻校正只改文字，失败、改时间或增删行时保留原文。范围变化后需要重新确认相对时间。
+
+字幕样式继承全局默认，再合并主播覆盖；已有片段持有自己的快照。修改字幕、范围或样式会使旧预览失效并撤回未批准暂存，需要重新生成。投稿资料单独修改可以保留有效成片，但仍检查版本、任务与批准锁定。
+
+生成任务由 Worker 执行。当前版本成片只进入 `staged`；生成封面并可预览。完整播放记录辅助检查，不强制完整播放才允许批准。批准后进入 `queued`，已批准或上传中的成片禁止覆盖。
+
+后台分析只在操作单个片段时持有其锁，不在模型判断或转码期间锁住整个工作台。现有片段编辑仍遵守各自版本与任务互斥规则。
+
+### 发布与主播默认
+
+标题、简介、标签和分区按“全局 → 主播 → 单片段”继承。新片段复制当前默认，修改默认不追写旧片段。消费者默认按自制投稿；`queued` 只表示已授权，`published`/BV 号表示本地记录了投稿结果，不能直接证明 B 站审核通过、公开可见或获得收益。
+
+上传消费者是 Worker 管理的独立进程。登录或依赖不足时暂停；已上传媒体的投稿重试复用远端标识。手动重新上传只接受无 `remote_filename` 的 failed 行；取消按现有阶段约束执行。
+
+主播档案保存发布默认、字幕样式、召回参数和人工指导。审核经验区分正面、补漏、负面与技术失败；建议至少有 5 条有效且包含正负的样本，人工应用才更新指导。
+
+Eagle 插件只同步源索引书签，不复制视频、不反向删除源；索引不可用时停止同步。真实 Eagle 安装的证据边界见 [实现与验证边界](../development/project.md#实现与验证边界)。
+
+### 整场终审与回收
+
+手动终审要求所有保留片段的当前成片完成并允许发布，丢弃有记录；零候选/无可保留内容需要明确确认。审核独立保存后再排源包回收，排队失败单独显示。已发布且本地成片已清理不阻止终审。
+
+拖拽与按钮回收执行同一检查。自动到期回收按独立生命周期策略执行，仍保护活跃任务、手动保留和上传引用；具体期限与维护入口见 [维护说明](README.md#维护与开发验证)。
+
+---
+
+## 维护与开发验证
+
+### 源录播生命周期
+
+仓库 `bilive-server.toml` 的 `retention.enabled=false`，需要从设置启用自动清理。代码类默认值与模板开关不完全相同，未加载模板的自定义配置应显式设置此项。
+
+- 未处理源录播默认保留 5 天。
+- 全部保留片段成功发布后，从最后成功发布时间起保留源录播 24 小时；部分发布不提前缩短期限。
+- 手动保留、正在录制/转封装/分析/成片/上传等状态禁止自动回收；执行前重新核对最新策略和录制状态。
+- 通过 Windows 回收站移动源包；上传引用的成片、独立字幕、投稿资料、历史成片和审核记录受保护。冻结清单记录逐项结果，部分失败可重排，未知结果停止。
+
+```powershell
+cd D:\bilive
+.\.venv-win\Scripts\python.exe scripts/recording_retention.py
+```
+
+维护持久化结果并排回收任务，仅在确实排出任务时唤醒 Worker，不直接搬移媒体。到期时间按实际日期累计，关机不会暂停计时；实际执行依赖下次可运行检查和保护校验。
+
+### Windows 计划任务
+
+```powershell
+.\install_windows_startup_tasks.ps1
+.\install_windows_recording_retention_task.ps1
+```
+
+脚本默认只输出计划，加 `-Install` 才注册到独立 `\BiliveV2\` 路径。录制器和 Dashboard 在登录时分别通过各自 `pythonw.exe` 和 `scripts/run_windows_task.py` 无控制台启动，日志在 `logs/startup/`。
+
+保留期任务当前安装器设为每日 08:30，允许错过后补运行，不唤醒电脑。同目录旧任务可更新下一次启动入口；不属于本目录的同名入口拒绝覆盖。脚本配置不证明本机已注册或未来已触发，实际状态需读回任务计划确认。
+
+### 历史媒体维护
+
+与日常到期回收分开。先停止录制并确认 Worker、上传消费者及持久任务空闲。默认只报告，不重置上传库：
+
+```powershell
+.\.venv-win\Scripts\python.exe scripts/recording_history.py --report .runtime/reports/history.json --audit-mp4
+```
+
+显式加 `--execute` 才修复历史 FLV，验证 MP4 后移除 FLV；另加 `--delete-invalid` 才删除确认无效文件。报告不得覆盖源媒体/操作工件；登记成片和上传路径受保护，权威库不可读时停止。
+
+### 开发验证
+
+```powershell
+$env:PYTHONPATH = "D:\bilive\src"
+.\.venv-win\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
+.\.venv-win\Scripts\python.exe scripts/verify_upload_adapter.py
+node --test tests/analysis_feedback.test.cjs
+node --test eagle-plugin/tests/*.test.mjs
+```
+
+Windows 临时目录权限影响测试时，使用新的项目内隔离目录，不修改生产重试规则来迁就测试。模型与 CDN/投稿模拟回归不代表真实网络验收；浏览器记录应区分隔离写入与正式只读检查。
+
+原生双环境验收可设置 `BILIVE_NATIVE_ACCEPTANCE=1` 后执行 `tests/test_analysis_pipeline.py -k completed_recording`，仅使用测试生成的短媒体。测试通过次数与执行范围保存在有日期的 [验收记录](../history/README.md)。
+
+### 投稿反馈采集
+
+```powershell
+.\.venv-win\Scripts\python.exe scripts/collect_publication_feedback.py --days 90
+```
+
+只读查询创作中心，快照写入 `artifacts/research/publication-feedback/`；认证或分页不完整时停止。接口未提供收入、完播率、观看时长和曝光，缺失值保持未知。周复盘方向见 [收益路线](../development/optimization.md#虚拟主播切片收益与持续优化路线)，应用侧自动化是否仍启用需单独确认。
