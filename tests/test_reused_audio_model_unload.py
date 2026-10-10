@@ -108,3 +108,13 @@ def test_transcribe_loads_cuda_model_with_dll_paths(monkeypatch):
     assert result["mode"] == "sequential"
     assert calls[0][1]["device"] == "cuda"
     assert calls[0][1]["compute_type"] == "float16"
+
+
+def test_unloading_empty_cache_does_not_wait_for_gpu_release(monkeypatch):
+    monkeypatch.setattr(audio_analyzer, '_whisper_model', None)
+    monkeypatch.setattr(audio_analyzer, '_whisper_batch_pipeline', None)
+    monkeypatch.setattr(audio_analyzer, '_whisper_model_key', ('stale',))
+    calls = []
+    monkeypatch.setattr(audio_analyzer, 'release_gpu_memory', lambda: calls.append(True))
+    audio_analyzer.unload_asr_models()
+    assert not calls and audio_analyzer._whisper_model_key is None

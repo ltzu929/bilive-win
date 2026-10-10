@@ -61,7 +61,7 @@ def test_dashboard_host_allowlist_does_not_authorize_cross_origin_writes(monkeyp
     assert c.post('/api/actions',headers={'Host':'workbench.example','Origin':'http://workbench.example'},json={}).status_code == 422
 
 
-def test_asr_adapter_uses_configured_vad_engine_and_unload(tmp_path,monkeypatch):
+def test_asr_adapter_uses_configured_vad_engine_and_keeps_model_for_task(tmp_path,monkeypatch):
     from bilive.analysis.pipeline import AnalysisPipeline
     from bilive.vendor.autoslice.mllm_sdk import audio_analyzer as audio
     from bilive.worker import preflight
@@ -76,7 +76,7 @@ def test_asr_adapter_uses_configured_vad_engine_and_unload(tmp_path,monkeypatch)
     pipeline._transcribe(tmp_path/'source.mp4')
     assert calls[0]['engine'] == 'faster-whisper' and calls[0]['model_size'] == str(model)
     assert calls[0]['vad_min_silence_ms'] == 750 and calls[0]['vad_speech_pad_ms'] == 200
-    assert unloads == [True] and not wave.exists()
+    assert unloads == [] and not wave.exists()
 
 
 def test_judgment_and_correction_share_instance_endpoint(monkeypatch):

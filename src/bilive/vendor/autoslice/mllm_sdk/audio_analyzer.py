@@ -410,6 +410,7 @@ def release_gpu_memory(delay: float = 3.0) -> None:
 
 def unload_asr_models() -> None:
     global _whisper_batch_pipeline, _whisper_model, _whisper_model_key
+    had_model = _whisper_model is not None or _whisper_batch_pipeline is not None
     if _whisper_model is not None:
         scan_log.info(
             f"ASR model unload: model_key={_whisper_model_key} pid={os.getpid()}"
@@ -417,7 +418,8 @@ def unload_asr_models() -> None:
     _whisper_batch_pipeline = None
     _whisper_model = None
     _whisper_model_key = None
-    release_gpu_memory()
+    if had_model:
+        release_gpu_memory()
 
 
 def unload_whisper_model() -> None:

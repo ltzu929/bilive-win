@@ -40,6 +40,7 @@ asr_prompt_max_chars = 4000
 whisper_engine = "faster-whisper"
 whisper_vad_min_silence_ms = 2000
 whisper_vad_speech_pad_ms = 400
+# Reuse ASR across all candidates; release only after the whole analysis task.
 unload_audio_model_after_analysis = true
 
 [slice.subtitle]

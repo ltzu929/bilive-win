@@ -410,3 +410,74 @@ def test_alignment_created_duplicate_retains_subtitles_but_does_not_render(setup
     assert wb.detail(loser['segment_id'])['subtitles'] and Path(loser['candidate_path']).exists()
     assert q.list(stage='staged')['total'] == 1 and q.claim_next() is None
     assert out['requires_source_review']
+
+
+@pytest.mark.parametrize('release_after_task', [True, False])
+def test_scene_keeps_one_asr_model_for_candidates_and_formal_recognition(setup, monkeypatch, release_after_task):
+    import sys
+    import types
+    from bilive.vendor.autoslice.mllm_sdk import audio_analyzer as audio
+
+    settings, wb, fin, queue = setup
+    settings.subtitle.asr_device = 'cpu'
+    settings.subtitle.asr_compute_type = 'int8'
+    settings.multi_modal.unload_audio_model_after_analysis = release_after_task
+    loads, recognitions, releases = [], [], []
+
+    class Model:
+        def __init__(self, *args, **kwargs):
+            loads.append(True)
+
+    class Batch:
+        def __init__(self, model):
+            self.model = model
+
+        def transcribe(self, audio_path, **kwargs):
+            recognitions.append(audio_path)
+            cues = [types.SimpleNamespace(start=.2, end=1.8, text='有效字幕', words=[])]
+            if Path(audio_path).read_text() == 'formal':
+                cues.append(types.SimpleNamespace(start=2.2, end=3.8, text='另一条字幕', words=[]))
+            return iter(cues), types.SimpleNamespace(language='zh')
+
+    fake = types.ModuleType('faster_whisper')
+    fake.WhisperModel, fake.BatchedInferencePipeline = Model, Batch
+    monkeypatch.setitem(sys.modules, 'faster_whisper', fake)
+    for key in ('_whisper_model', '_whisper_batch_pipeline', '_whisper_model_key'):
+        monkeypatch.setattr(audio, key, None)
+    monkeypatch.setattr(audio, 'release_gpu_memory', lambda: releases.append(len(recognitions)))
+    monkeypatch.setattr('bilive.worker.preflight.cached_asr_model', lambda settings: wb.videos)
+
+    def extract(*args, **kwargs):
+        path = wb.artifacts / f'audio-{len(recognitions)}.wav'
+        path.write_text('formal' if Path(args[0]).name == 'asr_window.mp4' else 'candidate')
+        return str(path)
+
+    monkeypatch.setattr(audio, 'extract_audio', extract)
+    from bilive.vendor.autoslice.burst_detector import BurstEvent
+    events = [BurstEvent(a+1, a, a+2, 2, 10, 3, 20, burst_start=a+1, burst_end=a+1.2) for a in (0, 2)]
+    monkeypatch.setattr('bilive.analysis.pipeline.detect_bursts', lambda *args, **kwargs: events)
+    # Duplicate review is orthogonal to the model lifecycle under test.
+    monkeypatch.setattr('bilive.vendor.clip_rules._mark_cross_candidate_duplicates', lambda *args: None)
+    pipeline = AnalysisPipeline(settings, wb, fin, judge=lambda **kwargs: [result()])
+    output = pipeline.run('session.mp4', task_id_from_source_relpath('session.mp4'))
+
+    assert output['candidates'] == 2
+    assert len(recognitions) == 4  # Two candidate calls, then two padded formal calls.
+    assert loads == [True]
+    assert releases == ([4] if release_after_task else [])
+    assert (audio._whisper_model is None) == release_after_task
+    assert not list(wb.artifacts.glob('audio-*.wav'))
+
+
+@pytest.mark.parametrize('entry', ['run', 'transcribe_segment', 'retry_judge'])
+def test_asr_task_releases_cached_model_on_exception(monkeypatch, entry):
+    from bilive.vendor.autoslice.mllm_sdk import audio_analyzer as audio
+    for key in ('_whisper_model', '_whisper_batch_pipeline', '_whisper_model_key'):
+        monkeypatch.setattr(audio, key, object())
+    released = []
+    monkeypatch.setattr(audio, 'release_gpu_memory', lambda: released.append(True))
+    pipeline = AnalysisPipeline(Settings(), None, None)
+    with pytest.raises(AttributeError):
+        getattr(pipeline, entry)(*(['source.mp4', 'task'] if entry == 'run' else [None]))
+    assert released == [True]
+    assert audio._whisper_model is None and audio._whisper_batch_pipeline is None

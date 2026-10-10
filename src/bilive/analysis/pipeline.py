@@ -9,6 +9,7 @@ from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from functools import wraps
 
 from bilive.domain.models import SubtitleLine, clamp_subtitle_times, segment_id_from_source_and_range
 from bilive.media.finalize import PipelineError, ensure_raw_cut
@@ -27,6 +28,19 @@ def read_danmaku(xml: Path) -> list[tuple[float, str]]:
             raise PipelineError("invalid danmaku timestamp")
         result.append((ts, node.text or ""))
     return result
+
+
+def _release_asr_after_task(method):
+    """Keep the shared model for the whole task, including all candidate threads."""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            if self.settings.multi_modal.unload_audio_model_after_analysis:
+                from bilive.vendor.autoslice.mllm_sdk.audio_analyzer import unload_asr_models
+                unload_asr_models()
+    return wrapped
 
 
 class AnalysisPipeline:
@@ -67,10 +81,8 @@ class AnalysisPipeline:
                 vad_speech_pad_ms=self.settings.multi_modal.whisper_vad_speech_pad_ms)
         finally:
             audio.unlink(missing_ok=True)
-            if self.settings.multi_modal.unload_audio_model_after_analysis:
-                from bilive.vendor.autoslice.mllm_sdk.audio_analyzer import unload_asr_models
-                unload_asr_models()
 
+    @_release_asr_after_task
     def transcribe_segment(self, job) -> dict:
         """Recognize only the saved range; return a draft without changing media or approval."""
         wb = self.workbench
@@ -110,6 +122,7 @@ class AnalysisPipeline:
             wb.check_revision(wb.load(job.target), job.payload['revision'])
         return {'ok': True, 'revision': job.payload['revision'], 'lines': [asdict(line) for line in lines]}
 
+    @_release_asr_after_task
     def run(self, source_relpath: str, task_id: str) -> dict:
         source = self.workbench.source(source_relpath)
         duration = _ffprobe_duration(source, [])
@@ -217,6 +230,7 @@ class AnalysisPipeline:
             return True
         return False
 
+    @_release_asr_after_task
     def retry_judge(self, job):
         from bilive.lifecycle.profiles import profile_for_source
         from bilive.domain.models import task_id_from_source_relpath

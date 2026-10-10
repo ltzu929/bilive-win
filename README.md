@@ -142,3 +142,5 @@ node --test eagle-plugin/tests/*.test.mjs
 录播库候选下方提供“废弃当前片段”，原因选填。废弃会撤回未批准成片暂存并永久阻止该片段继续生成或发布，保留源录播及审核记录。已批准发布或存在活跃任务的片段沿用保护规则。
 
 自动 AI 切片开关为 `analysis.auto_start`（兼容 `slice.analysis.auto_start`），默认 false；Worker 每次转码后读取当前设置，关闭会取消等待中的自动任务，已开始任务完成当前分析。开启不会追溯分析历史录播，发布仍需人工确认。
+
+Whisper 模型在同一场分析的所有候选和补做的正式识别之间复用。`unload_audio_model_after_analysis = true` 在整场任务结束或异常退出时释放模型；单独识别字幕、重新判断则在各自任务结束时释放。没有加载模型的任务不等待显存释放。
