@@ -137,6 +137,8 @@ def _ffmpeg_analysis_copy_command(
     video_bitrate: str,
     audio_bitrate: str,
 ) -> list[str]:
+    from bilive.config.settings import load_settings
+    encoder = load_settings().video.encoder
     return [
         "ffmpeg",
         "-hide_banner",
@@ -148,9 +150,9 @@ def _ffmpeg_analysis_copy_command(
         "-vf",
         "scale=-2:720",
         "-c:v",
-        "libx264",
+        encoder,
         "-preset",
-        "veryfast",
+        "p5" if encoder == "h264_nvenc" else "veryfast",
         "-b:v",
         video_bitrate,
         "-maxrate",

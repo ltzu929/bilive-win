@@ -26,3 +26,21 @@ def test_unanalysed_recording_has_no_false_completion(env):
     assert evidence['history_available'] is False
     assert evidence['status'] is None and evidence['total'] == 0
     assert evidence['summary']['completed'] == 0
+
+
+def test_recording_status_includes_worker_pause_without_mutating_job(env, monkeypatch):
+    import importlib
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    wb, _, task = env
+    api = importlib.import_module('bilive.api.app')
+    monkeypatch.setattr(api, 'workbench', wb)
+    monkeypatch.setattr(api, 'jobs', wb.jobs)
+    monkeypatch.setattr(api, 'worker_control', SimpleNamespace(status=lambda:{'state':'paused'}))
+    job = wb.jobs.submit('start_analysis', task)
+    before = list(wb.jobs.valid_jobs(job.status))[0][0].read_bytes()
+    response = TestClient(api.app).get(f'/api/recordings/{task}/segments')
+    assert response.status_code == 200
+    assert response.json()['worker']['state'] == 'paused'
+    assert response.json()['analysis_job']['status'] == 'pending'
+    assert list(wb.jobs.valid_jobs(job.status))[0][0].read_bytes() == before

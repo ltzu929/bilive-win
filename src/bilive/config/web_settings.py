@@ -30,6 +30,7 @@ BOUNDS = {
     'retention': {'unprocessed_days': (1, 3650), 'published_hours': (1, 87600)},
 }
 ENUMS = {
+    'video.encoder': ['libx264', 'h264_nvenc'],
     'subtitle.asr_device': ['cuda', 'cpu', 'auto'],
     'subtitle.asr_compute_type': ['float16', 'float32', 'int8', 'int8_float16', 'int8_float32', 'auto', 'default'],
     'multi_modal.whisper_engine': ['faster-whisper'],

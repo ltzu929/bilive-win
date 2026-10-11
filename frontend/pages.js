@@ -825,12 +825,14 @@ function drawSettings() {
             running: "运行中",
             idle: "空闲",
             offline: "未运行",
+            paused: "已暂停",
             unavailable: "不可用",
             starting: "启动中",
             stopping: "正在停止",
             unknown: "未知",
           };
-        return `<div class="svc-row"><div class="svc-ico">${icon(ico)}</div><div class="txt"><div class="name">${label}<span class="service-state ${healthy ? "text-green" : "muted"}"><i></i>${names[v.state] || htmlEscape(v.state || "未知")}</span></div><p class="desc">${desc}</p></div>${key === "worker" ? `<button id="runtime-primary" class="btn ${v.state === "offline" ? "btn-primary" : "btn-secondary"}" data-runtime-path="${v.state === "offline" ? "/api/worker/wake" : "/api/worker/stop"}" ${!["offline", "ok", "running", "idle"].includes(v.state) ? "disabled" : ""}>${v.state === "offline" ? "启动处理服务" : "停止处理服务"}</button>` : ""}</div>`;
+        const stopped = ["offline", "paused"].includes(v.state);
+        return `<div class="svc-row"><div class="svc-ico">${icon(ico)}</div><div class="txt"><div class="name">${label}<span class="service-state ${healthy ? "text-green" : "muted"}"><i></i>${names[v.state] || htmlEscape(v.state || "未知")}</span></div><p class="desc">${desc}</p></div>${key === "worker" ? `<button id="runtime-primary" class="btn ${stopped ? "btn-primary" : "btn-secondary"}" data-runtime-path="${stopped ? "/api/worker/wake" : "/api/worker/stop"}" ${!["offline", "paused", "ok", "running", "idle"].includes(v.state) ? "disabled" : ""}>${stopped ? "启动处理服务" : "停止处理服务"}</button>` : ""}</div>`;
       })
       .join(
         "",

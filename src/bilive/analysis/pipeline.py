@@ -215,8 +215,12 @@ class AnalysisPipeline:
             history["candidates"].append(entry)
             bindings.append((event, candidate, entry))
         self._save_history(path, history)
+        progress_lock = threading.Lock()
+        def save_progress():
+            with progress_lock:
+                self._save_history(path, history)
         with ThreadPoolExecutor(max_workers=max(1, int(self.settings.mimo.request_concurrency))) as pool:
-            futures = [pool.submit(self._prepare, source, source_relpath, event, candidate, entry, danmaku, profile)
+            futures = [pool.submit(self._prepare, source, source_relpath, event, candidate, entry, danmaku, profile, save_progress)
                        for event, candidate, entry in bindings]
             prepared = [future.result() for future in futures]
         from bilive.vendor.clip_rules import _mark_cross_candidate_duplicates
@@ -254,16 +258,16 @@ class AnalysisPipeline:
         return {'ok':True,'candidates':len(bursts),'segments':history['segments'],
                 'requires_source_review':history['requires_source_review']}
 
-    def _prepare(self, source, rel, event, candidate, entry, danmaku, profile):
+    def _prepare(self, source, rel, event, candidate, entry, danmaku, profile, on_progress=None):
         import time
         started = time.perf_counter()
         try:
-            with timed_stage(entry,'candidate_cut'):
+            with timed_stage(entry,'candidate_cut',on_progress):
                 ensure_raw_cut(source, candidate, event.start, event.end, [])
             transcript = None
             if self.settings.analysis.pre_judge_asr:
                 try:
-                    with timed_stage(entry,'auxiliary_asr'), self.asr_lock:
+                    with timed_stage(entry,'auxiliary_asr',on_progress), self.asr_lock:
                         transcript = self._transcribe_for_profile(candidate, profile)
                     segments = transcript.get('segments', [])
                     if transcript.get('error') or not any(isinstance(v.get('text'),str) and v['text'].strip() for v in segments) or any(
@@ -276,7 +280,7 @@ class AnalysisPipeline:
                     transcript = None
                     entry['pre_asr_failed'] = True
                     entry['timings']['auxiliary_asr']['status'] = 'failed'
-            with timed_stage(entry,'judgment'):
+            with timed_stage(entry,'judgment',on_progress):
                 results = self.judge(video_path=str(candidate),artist=profile.get('display_name') or Path(rel).parent.name,
                 guidance=str(profile.get('approved_guidance',''))[:2000],
                 danmaku_text='\n'.join(f'{t-event.start:.2f}s {text}' for t,text in danmaku if event.start <= t <= event.end),

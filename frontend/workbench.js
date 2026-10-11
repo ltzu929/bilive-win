@@ -378,6 +378,7 @@ async function renderManualWorkbench() {
       ]);
       segments = data.items.sort((a, b) => a.source_start - b.source_start);
       analysisJob = data.analysis_job;
+      review.analysisWorker = data.worker;
       review.autoAnalysis = data.auto_analysis_enabled === true;
       evidence = ev;
       lifecycle = life.record;
@@ -554,7 +555,7 @@ function candidateNeedsReview(s) {
 }
 
 let analysisTimer;
-function recordingAnalysisState(job = review.analysisJob, evidence = review.evidence, segments = review.analysisSegments || review.segments) {
+function recordingAnalysisState(job = review.analysisJob, evidence = review.evidence, segments = review.analysisSegments || review.segments, worker = review.analysisWorker) {
   const e = evidence || {}, total = e.total || 0;
   // Older running API processes do not yet return summary. Only count a complete page.
   const summary = e.summary || (e.candidates?.length === total ? {
@@ -570,9 +571,30 @@ function recordingAnalysisState(job = review.analysisJob, evidence = review.evid
     ? Math.max(0, Date.now() / 1000 - job.progress.started_at) : job?.progress?.elapsed_seconds;
   const timing = Number.isFinite(elapsed) ? ` · 已用 ${timecode(Math.floor(elapsed))}` : "";
   if (review.analysisSubmitting) return {title: "正在提交 AI 分析…", detail: "正在为本场录播创建分析任务。", tone: "busy", empty: "分析请求正在提交，请稍候。"};
+  if (["pending", "processing"].includes(status)) {
+    if (["paused", "offline"].includes(worker?.state)) return {
+      title: worker.state === "paused" ? "AI 分析已暂停" : "AI 分析中断：后台未运行",
+      detail: "当前没有后台处理服务执行本场分析。任务和已生成文件已保留；点击“恢复分析”启动后台并继续处理。",
+      tone: "warning", empty: "分析尚未完成，点击“恢复分析”继续处理。", resume: true,
+    };
+    if (worker?.state === "stopping") return {title: "AI 分析正在停止", detail: "后台正在结束当前操作，剩余任务将保留。停止后可点击“恢复分析”。", tone: "warning", empty: "处理服务正在停止，分析尚未完成。"};
+    if (worker?.state === "unavailable") return {title: "分析服务不可用", detail: `无法确认后台处理状态：${worker.detail || "请检查设置中的处理服务"}。任务仍保留。`, tone: "error", empty: "后台状态无法确认，分析尚未完成。"};
+    if (status === "pending" && job?.progress?.reason) return {title: "AI 分析暂时无法开始", detail: `环境检查未通过：${job.progress.reason}。请检查设置中的模型与显卡环境，修复后后台会重新检查。`, tone: "warning", empty: "任务因环境问题等待处理，尚未生成分析结果。"};
+  }
   if (status === "pending") return {title: "AI 分析已排队", detail: `等待后台处理服务开始分析${job?.progress?.reason ? "：" + job.progress.reason : "。准备分析环境或处理其他任务可能需要等待。"}`, tone: "busy", empty: "分析任务已提交，尚未开始处理；这里还不是分析结果。"};
+  const stages = {candidate_cut: "裁剪候选视频", auxiliary_asr: "识别参考字幕 / 等待识别", judgment: "准备 AI 视频 / 等待判断"};
+  const currentStages = (e.candidates || []).map((c, i) => {
+    const active = Object.entries(c.timings || {}).find(([, t]) => t.status === "processing");
+    const label = active ? stages[active[0]] || active[0]
+      : c.state === "failed" ? "处理失败"
+      : c.state !== "processing" ? "已处理"
+      : c.timings?.judgment?.status === "done" ? "判断已结束，等待汇总"
+      : Object.values(c.timings || {}).some(t => t.status === "failed") ? "准备失败，等待汇总"
+      : "等待处理";
+    return `候选 ${(e.offset || 0) + i + 1}：${label}`;
+  }).join("；");
   if (status === "processing") return {title: `AI 正在分析${timing}`, detail: total
-    ? `已召回 ${total} 个候选区间${Number.isInteger(summary.completed) ? `，已处理 ${summary.completed} / ${total} 个` : ""}。正在进行视频准备、AI 判断或字幕成片，完成后会自动更新。`
+    ? `已召回 ${total} 个候选区间${Number.isInteger(summary.completed) ? `，已处理 ${summary.completed} / ${total} 个` : ""}。${currentStages || "正在进行视频准备、AI 判断或字幕成片"}。完成后会自动更新。`
     : "正在读取录播、召回候选或准备分析。完成后会自动更新。", tone: "busy", empty: "AI 分析尚未结束，暂未生成待审核片段，请等待结果。"};
   if (job?.result?.cancelled || e.skipped) return {title: job?.result?.cancelled ? "AI 分析已取消" : "本场分析已跳过", detail: e.skip_reason === "below min_source_size_mb" ? "源文件小于配置的分析门槛，未进行 AI 判断。可手动补选片段。" : "本场未完成 AI 分析，可重新提交或手动补选片段。", tone: "muted", empty: "尚无待审核片段，可重新分析或手动补选。"};
   if (status === "failed") return {title: "AI 分析失败", detail: `${job?.result?.error || e.error || "处理未能完成，请查看分析证据。"} 可重试或手动补选片段。`, tone: "error", empty: "分析失败，不能据此判断本场没有值得切的片段。"};
@@ -592,6 +614,8 @@ function updateRecordingAnalysis(message = "") {
   banner.setAttribute("aria-busy", String(state.tone === "busy"));
   setMessage("analysis-title", state.title);
   setMessage("analysis-detail", message || state.detail);
+  const resume = document.getElementById("analysis-resume");
+  if (resume) { resume.hidden = !state.resume; resume.disabled = !!(review.analysisSubmitting || review.lifecycle?.review_result); }
   setMessage("candidate-empty", state.empty);
   if (!review.segment) {
     setMessage("context-state", state.title);
@@ -600,8 +624,8 @@ function updateRecordingAnalysis(message = "") {
   for (const id of ["review-analyze", "review-analyze-now"]) {
     const button = document.getElementById(id);
     if (!button) continue;
-    button.disabled = !!(review.analysisSubmitting || review.lifecycle?.review_result || ["pending", "processing"].includes(review.analysisJob?.status));
-    button.textContent = review.analysisSubmitting ? "正在提交…" : review.analysisJob?.status === "pending" ? "AI 分析已排队" : review.analysisJob?.status === "processing" ? "AI 正在分析…" : review.analysisJob?.status === "failed" ? "重试 AI 分析" : "AI 分析本场录播";
+    button.disabled = !!(review.analysisSubmitting || review.lifecycle?.review_result || (!state.resume && ["pending", "processing"].includes(review.analysisJob?.status)));
+    button.textContent = review.analysisSubmitting ? "正在提交…" : state.resume ? "恢复分析" : review.analysisJob?.status === "pending" ? "AI 分析已排队" : review.analysisJob?.status === "processing" ? "AI 正在分析…" : review.analysisJob?.status === "failed" ? "重试 AI 分析" : "AI 分析本场录播";
   }
 }
 function analysisInputSnapshot() {
@@ -617,6 +641,7 @@ async function watchRecordingAnalysis(taskId, epoch) {
     ]);
     if (!current()) return;
     review.analysisJob = data.analysis_job;
+    review.analysisWorker = data.worker;
     review.analysisSegments = data.items;
     review.evidence = evidence;
     const ended = !["pending", "processing"].includes(data.analysis_job?.status);
@@ -757,7 +782,7 @@ function reviewMarkup(s, task, lines, initial) {
       ])}<div class="action-row"><button class="btn btn-secondary" data-dialog="points-dialog">编辑片段范围</button>${s.candidate_path ? '<button id="review-rejudge" class="btn btn-secondary">重新判断原候选</button>' : ""}</div>${s.latest_rejudgment ? `<details open><summary>最近重新判断结果</summary>${s.latest_rejudgment.results.map((r, i) => `<p>${htmlEscape(r.title)} · ${htmlEscape(r.judge_status)} · ${htmlEscape(r.quality_reason || r.judge_error)} ${r.suggested_trim ? `<button class="text-button" data-rejudge-range="${i}">将建议填入范围草稿</button>` : ""}</p>`).join("") || "<p>没有返回片段，仍需人工复核。</p>"}</details>` : ""}<details><summary>当前片段字幕样式</summary><div class="action-row"><a class="btn btn-secondary" href="#/settings?tab=subtitles">调整全局字幕设置</a><button id="review-style-default" class="btn btn-secondary">应用默认样式并使旧成片失效</button></div><p class="hint">应用后需要重新生成成片；也可在下方单独覆盖本片段样式。</p><label class="field">字幕样式 JSON<textarea id="review-style">${htmlEscape(JSON.stringify(s.subtitle_style || {}, null, 2))}</textarea></label><button id="review-style-save" class="btn btn-secondary">保存样式并使旧成片失效</button></details>`
     : "<p>先选定源范围并创建人工片段。</p>";
   return (
-    header + '<section id="recording-analysis" class="recording-analysis" role="status" aria-live="polite"><strong id="analysis-title"></strong><p id="analysis-detail"></p></section>' +
+    header + '<section id="recording-analysis" class="recording-analysis" role="status" aria-live="polite"><strong id="analysis-title"></strong><p id="analysis-detail"></p><button id="analysis-resume" class="btn btn-primary btn-sm" hidden>恢复分析</button></section>' +
     `<div class="workbench-grid card ${review.largePlayer ? "large-player" : ""}"><section class="player-column"><div class="player-toolbar">${tabsHTML(
       [
         ["source", "源录播"],
@@ -999,17 +1024,20 @@ function drawManualWorkbench() {
       e.textContent = `终审未完成：${reasons[err.message] || err.message}`;
     }
   };
-  for (const id of ["review-analyze", "review-analyze-now"]) {
+  for (const id of ["review-analyze", "review-analyze-now", "analysis-resume"]) {
     const analyze = document.getElementById(id);
-    analyze.disabled = !!(review.lifecycle?.review_result || ["pending", "processing"].includes(review.analysisJob?.status));
+    analyze.disabled = !!(review.lifecycle?.review_result || (!recordingAnalysisState().resume && ["pending", "processing"].includes(review.analysisJob?.status)));
     analyze.onclick = async () => {
+      const resuming = recordingAnalysisState().resume;
       review.analysisSubmitting = true;
       updateRecordingAnalysis();
       try {
-        await mutateReview("/api/actions", {
-          action: "start_analysis",
-          target: task.task_id,
-        });
+        if (resuming) {
+          const result = await mutateReview("/api/worker/wake", {});
+          if (["paused", "unavailable", "stopping"].includes(result.state)) throw new Error(result.detail || "后台尚未启动，请稍后重试");
+        } else {
+          await mutateReview("/api/actions", {action: "start_analysis", target: task.task_id});
+        }
         review.analysisSubmitting = false;
         await renderManualWorkbench();
       } catch (e) {

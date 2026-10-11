@@ -37,6 +37,19 @@ def test_user_pause_blocks_automatic_worker_wake(tmp_path, monkeypatch):
     assert control.wake()['state'] == 'paused'
 
 
+def test_dashboard_stop_persists_pause_until_explicit_wake(tmp_path, monkeypatch):
+    api = importlib.import_module('bilive.api.app')
+    control = WorkerControl(tmp_path, tmp_path / 'runtime', port=1)
+    monkeypatch.setattr(api, 'worker_control', control)
+    client = TestClient(api.app)
+    assert client.post('/api/worker/stop').json()['state'] == 'paused'
+    assert (control.runtime / 'worker-paused').exists()
+    assert control.wake()['state'] == 'paused'
+    monkeypatch.setattr(control, 'wake', lambda: {'state':'starting'})
+    assert client.post('/api/worker/wake').json()['state'] == 'starting'
+    assert not (control.runtime / 'worker-paused').exists()
+
+
 def test_config_diagnostics_are_read_only_and_do_not_expose_credentials(tmp_path, monkeypatch):
     api = importlib.import_module('bilive.api.app')
     settings = Settings()

@@ -5,9 +5,9 @@ const vm = require('node:vm');
 const context = vm.createContext({ Date });
 vm.runInContext(fs.readFileSync('frontend/ui.js', 'utf8'), context);
 vm.runInContext(fs.readFileSync('frontend/workbench.js', 'utf8'), context);
-const state = (job, evidence, segments = []) => {
-  context.input = { job, evidence, segments };
-  return vm.runInContext('recordingAnalysisState(input.job, input.evidence, input.segments)', context);
+const state = (job, evidence, segments = [], worker) => {
+  context.input = { job, evidence, segments, worker };
+  return vm.runInContext('recordingAnalysisState(input.job, input.evidence, input.segments, input.worker)', context);
 };
 test('queued and processing are never presented as empty completed results', () => {
   assert.match(state({status: 'pending', progress: {reason: 'ASR model missing'}}).detail, /ASR model missing/);
@@ -16,6 +16,41 @@ test('queued and processing are never presented as empty completed results', () 
   assert.match(busy.title, /已用 00:01:05/);
   assert.match(busy.detail, /1 \/ 3/);
   assert.match(busy.empty, /尚未结束/);
+});
+test('paused and offline tasks show actionable recovery without a busy spinner', () => {
+  for (const worker of [{state:'paused'}, {state:'offline'}]) {
+    for (const status of ['pending', 'processing']) {
+      const result = state({status}, {status:'processing'}, [], worker);
+      assert.equal(result.resume, true);
+      assert.equal(result.tone, 'warning');
+      assert.match(result.detail, /恢复分析/);
+      assert.doesNotMatch(result.title, /已排队|正在分析/);
+    }
+  }
+  assert.equal(state({status:'done'}, {total:0}, [], {state:'paused'}).resume, undefined);
+  assert.equal(state({status:'pending'}, {}, [], {state:'running'}).tone, 'busy');
+});
+test('blocked environment and stopping service explain why work is not progressing', () => {
+  assert.match(state({status:'pending',progress:{reason:'CUDA unavailable'}}, {}, [], {state:'running'}).detail, /环境检查未通过.*CUDA unavailable/);
+  assert.equal(state({status:'pending'}, {}, [], {state:'stopping'}).resume, undefined);
+});
+test('running candidates report persisted processing stages', () => {
+  const result = state({status:'processing'}, {total:2, candidates:[
+    {state:'processing',timings:{candidate_cut:{status:'done'},judgment:{status:'processing'}}},
+    {state:'processing',timings:{auxiliary_asr:{status:'processing'}}},
+  ]}, [], {state:'running'});
+  assert.match(result.detail, /候选 1：准备 AI 视频/);
+  assert.match(result.detail, /候选 2：识别参考字幕/);
+});
+test('a candidate that finished judgment stays visible while others run', () => {
+  const result = state({status:'processing'}, {total:3, candidates:[
+    {state:'processing',timings:{judgment:{status:'processing'}}},
+    {state:'processing',timings:{judgment:{status:'processing'}}},
+    {state:'processing',timings:{judgment:{status:'done'}}},
+  ]}, [], {state:'running'});
+  assert.match(result.detail, /候选 1：准备 AI 视频/);
+  assert.match(result.detail, /候选 2：准备 AI 视频/);
+  assert.match(result.detail, /候选 3：判断已结束，等待汇总/);
 });
 test('no recall, explicit drops, technical failure and skipped analysis have different outcomes', () => {
   assert.match(state({status: 'done'}, {total: 0}).title, /未召回/);

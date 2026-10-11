@@ -80,6 +80,17 @@ def test_encode_video_for_mimo_honors_encode_parallelism(tmp_path):
     assert max_active == 1
 
 
+def test_analysis_video_uses_selected_encoder_and_preserves_bitrate_limit(monkeypatch):
+    from bilive.vendor.autoslice.mllm_sdk.mimo_video import _ffmpeg_analysis_copy_command
+    for encoder, preset in [('h264_nvenc','p5'), ('libx264','veryfast')]:
+        monkeypatch.setenv('BILIVE_VIDEO_ENCODER', encoder)
+        command = _ffmpeg_analysis_copy_command('input.mp4','output.mp4',video_bitrate='900k',audio_bitrate='96k')
+        assert command[command.index('-c:v')+1] == encoder
+        assert command[command.index('-preset')+1] == preset
+        assert command[command.index('-maxrate')+1] == '900k'
+        assert command[command.index('-bufsize')+1] == '1800k'
+
+
 def test_server_config_exports_mimo_settings():
     from bilive.vendor import config as server_config
 

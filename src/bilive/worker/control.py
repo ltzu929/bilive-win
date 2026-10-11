@@ -53,8 +53,8 @@ class WorkerControl:
 
     def stop(self):
         status = self.status()
-        if status["state"] == "offline":
-            return {"state":"offline"}
+        if status["state"] in {"offline", "paused"}:
+            return status
         if status.get("service") != "bilive-worker":
             raise ValueError("unexpected service on Worker port")
         return self.request("/stop",write=True)

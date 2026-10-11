@@ -16,6 +16,22 @@ from bilive.upload.queue import UploadQueue
 from bilive.vendor.autoslice.analysis_result import AnalysisResult, TrimSuggestion
 
 
+def test_running_judgment_stage_is_saved_before_remote_call_returns(setup):
+    import json
+    settings, wb, fin, _ = setup
+    settings.analysis.pre_judge_asr = False
+    observed = []
+    def judge(**kwargs):
+        history = json.loads((wb.videos / 'session.mp4.task.json').read_text(encoding='utf-8'))
+        observed.extend(c for c in history['candidates'] if c.get('timings', {}).get('judgment', {}).get('status') == 'processing')
+        return []
+    pipeline = AnalysisPipeline(settings, wb, fin, judge=judge)
+    pipeline.run('session.mp4', task_id_from_source_relpath('session.mp4'))
+    assert observed
+    assert observed[0]['timings']['candidate_cut']['status'] == 'done'
+    assert observed[0]['timings']['judgment']['started_at'] > 0
+
+
 def test_judge_transcript_has_candidate_relative_cue_times():
     settings = Settings()
     pipeline = AnalysisPipeline(settings, None, None)

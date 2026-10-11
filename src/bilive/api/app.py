@@ -354,6 +354,7 @@ def recording_segments(task_id: str) -> dict:
     newest = max(related, key=lambda pair:pair[0].stat().st_mtime_ns)[1] if related else None
     return {"items": workbench.list(rel), "source_relpath": rel,
             "auto_analysis_enabled":settings.analysis.auto_start is True,
+            "worker":worker_control.status(),
             "analysis_job":({"job_id":newest.job_id,"status":newest.status.value,
                             "progress":newest.progress,"result":newest.result} if newest else None)}
 
@@ -504,6 +505,8 @@ def wake_worker():
 
 @app.post("/api/worker/stop")
 def stop_worker():
+    worker_control.runtime.mkdir(parents=True, exist_ok=True)
+    (worker_control.runtime / 'worker-paused').touch()
     return worker_control.stop()
 
 
