@@ -252,7 +252,7 @@ class Workbench:
             return s
 
     def submit(self, action: str, sid: str, expected: int) -> dict:
-        if action not in {"finalize", "reburn", "render", "approve_publish", "retry_judge", "transcribe_subtitles"}:
+        if action not in {"finalize", "reburn", "render", "approve_publish", "retry_judge", "transcribe_subtitles", "generate_metadata"}:
             raise ValueError("action not available in manual workbench")
         with self.lock():
             s = self.load(sid)
@@ -276,6 +276,10 @@ class Workbench:
                 raise ActionConflict('manual segment has no automatic candidate to rejudge')
             if action not in {"approve_publish", "retry_judge", "transcribe_subtitles"} and s.get("subtitles_revision") != expected:
                 raise ActionConflict("save subtitles for this revision first")
+            if action == 'generate_metadata':
+                saved = self.subtitles.load(sid)
+                if saved['revision'] != expected or not saved['lines']:
+                    raise ActionConflict('请先保存当前片段的字幕，再生成文案建议')
             payload = {"revision": expected, "source_relpath": s["source_relpath"],
                        "source_start": s["source_start"], "source_end": s["source_end"]}
             job = self.jobs.submit(action, sid, payload)
@@ -319,6 +323,8 @@ class Workbench:
                     job = self.jobs.load_job(path)
                     if job.action == 'transcribe_subtitles':
                         s['transcription_job'] = {'status': status.value, 'payload': job.payload, 'result': job.result}
+                    elif job.action == 'generate_metadata':
+                        s['metadata_job'] = {'status': status.value, 'payload': job.payload, 'result': job.result}
                     break
         return s
 

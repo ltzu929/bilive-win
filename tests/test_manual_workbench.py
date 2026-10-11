@@ -76,7 +76,7 @@ def test_discard_is_persisted_withdraws_staging_and_blocks_actions(env, with_fin
     assert (wb.videos/'session.mp4').is_file()
     if old_final:
         assert uploads.get_by_path(old_final) is None and Path(old_final).is_file()
-    for action in ('finalize','render','reburn','approve_publish','retry_judge','transcribe_subtitles'):
+    for action in ('finalize','render','reburn','approve_publish','retry_judge','transcribe_subtitles','generate_metadata'):
         response = c.post('/api/actions',json={'action':action,'target':s['segment_id'],'revision':dropped['revision']})
         assert response.status_code == 409
     response = c.post('/api/subtitles/save',json={'segment_id':s['segment_id'],
@@ -506,3 +506,91 @@ def test_recording_evidence_is_paginated_read_only_and_shows_existing_artifacts(
     assert any(a['name'] == 'final_output.mp4' for a in data['segments'][0]['artifacts'])
     assert all(path.read_bytes() == original for path,original in before.items()) and not q.db_path.exists()
     assert c.get(f'/api/recordings/{task}/evidence?limit=101').status_code == 422
+
+
+def test_metadata_suggestion_preserves_media_until_explicit_save(env, monkeypatch):
+    from bilive.analysis.pipeline import AnalysisPipeline
+    c, w, wb, q = env
+    s = finalize(c, w, subtitles(c, create(c)))
+    final = Path(s['final_path']).read_bytes()
+    saved_subtitles = wb.subtitles._path(s['segment_id']).read_bytes()
+    original_row = q.get_by_path(s['final_path'])
+    calls = []
+    proposed = {'title':'当前片段的建议标题', 'description':'只描述这一段。', 'tags':['聊天']}
+    def generate(lines, **kwargs):
+        calls.append((lines, kwargs))
+        return proposed
+    monkeypatch.setattr('bilive.analysis.metadata.generate_metadata', generate)
+    w.analysis = AnalysisPipeline(Settings(), wb, w.finalizer)
+    w.preflight = lambda job: (True, '')
+    req = {'action':'generate_metadata', 'target':s['segment_id'], 'revision':s['revision']}
+    queued = c.post('/api/actions', json=req)
+    assert queued.status_code == 200, queued.text
+    assert c.post('/api/actions', json=req).json()['job_id'] == queued.json()['job_id']
+    assert c.post(f"/api/segments/{s['segment_id']}/metadata", json={
+        'expected_revision':s['revision'], **proposed}).status_code == 409
+    assert w.run_once()
+    job = c.get(f"/api/actions/{queued.json()['job_id']}").json()
+    assert job['status'] == 'done', job
+    detail = wb.detail(s['segment_id'])
+    assert detail['metadata_job']['result']['metadata'] == proposed
+    assert calls[0][0] == s['subtitles']
+    assert calls[0][1]['duration'] == 2 and 'title' not in calls[0][1]
+    assert detail['title'] == s['title'] and detail['revision'] == s['revision']
+    assert detail['final_valid'] and not detail['publish_approval']
+    assert Path(s['final_path']).read_bytes() == final
+    assert wb.subtitles._path(s['segment_id']).read_bytes() == saved_subtitles
+    assert q.get_by_path(s['final_path']) == original_row
+    saved = c.post(f"/api/segments/{s['segment_id']}/metadata", json={
+        'expected_revision':s['revision'], **proposed})
+    assert saved.status_code == 200 and saved.json()['title'] == proposed['title']
+    assert saved.json()['final_valid'] and q.get_by_path(s['final_path'])['stage'] == 'staged'
+    assert q.get_by_path(s['final_path'])['title'] == proposed['title']
+
+
+@pytest.mark.parametrize('change', ['revision', 'approved', 'error'])
+def test_metadata_failure_or_changed_segment_does_not_apply_suggestion(env, monkeypatch, change):
+    from bilive.analysis.pipeline import AnalysisPipeline
+    c, w, wb, q = env
+    s = subtitles(c, create(c))
+    original_lines = wb.subtitles.load(s['segment_id'])['lines']
+    def generate(lines, **kwargs):
+        current = wb.load(s['segment_id'])
+        if change == 'revision':
+            current['revision'] += 1
+        elif change == 'approved':
+            current['publish_approval'] = True
+        else:
+            raise ValueError('模型返回格式无效')
+        wb.save(current)
+        return {'title':'不应采用', 'description':'不应采用', 'tags':[]}
+    monkeypatch.setattr('bilive.analysis.metadata.generate_metadata', generate)
+    w.analysis = AnalysisPipeline(Settings(), wb, w.finalizer)
+    w.preflight = lambda job: (True, '')
+    queued = c.post('/api/actions', json={'action':'generate_metadata', 'target':s['segment_id'], 'revision':s['revision']})
+    assert queued.status_code == 200 and w.run_once()
+    job = c.get(f"/api/actions/{queued.json()['job_id']}").json()
+    assert job['status'] == 'failed' and not job['result'].get('metadata')
+    assert wb.load(s['segment_id'])['title'] == s['title']
+    assert wb.subtitles.load(s['segment_id'])['lines'] == original_lines
+
+
+def test_metadata_submission_requires_current_subtitles_and_unprotected_segment(env):
+    c, w, wb, q = env
+    s = create(c)
+    req = {'action':'generate_metadata', 'target':s['segment_id'], 'revision':s['revision']}
+    assert c.post('/api/actions', json=req).status_code == 409
+    s = subtitles(c, s)
+    req['revision'] = s['revision']
+    assert c.post('/api/actions', json={**req, 'revision':s['revision']-1}).status_code == 409
+    s['publish_approval'] = True
+    wb.save(s)
+    assert c.post('/api/actions', json=req).status_code == 409
+    s['publish_approval'] = False
+    wb.save(s)
+    from bilive.lifecycle.review import SourceReview
+    lifecycle = SourceReview(wb)
+    record = lifecycle.ensure('session.mp4')
+    record['review_state'] = 'review_complete'
+    lifecycle.save(record)
+    assert c.post('/api/actions', json=req).status_code == 409

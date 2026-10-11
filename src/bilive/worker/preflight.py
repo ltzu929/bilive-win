@@ -48,12 +48,12 @@ def check_action(job, settings=None) -> tuple[bool, str]:
     if job.action in {"finalize", "render", "reburn", "remux_recording", "start_analysis", "retry_judge", "transcribe_subtitles"}:
         if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
             return False, "FFmpeg / ffprobe unavailable"
-    if job.action in {"start_analysis", "retry_judge"}:
+    if job.action in {"start_analysis", "retry_judge", "generate_metadata"}:
         if not os.environ.get("MIMO_API_KEY"):
             return False, "MiMo API key is not configured"
         if importlib.util.find_spec("openai") is None:
             return False, "MiMo client dependency unavailable"
-        if job.action == 'retry_judge':
+        if job.action in {'retry_judge', 'generate_metadata'}:
             return True, ''  # Auxiliary ASR cannot block a new judgment.
     if job.action in {'start_analysis', 'transcribe_subtitles'}:
         if settings is not None and settings.multi_modal.whisper_engine != 'faster-whisper':

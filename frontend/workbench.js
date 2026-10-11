@@ -292,6 +292,20 @@ function capturePlayback() {
       finalPaused: final?.paused,
     };
 }
+function metadataSuggestionHTML(s) {
+  const job = s?.metadata_job;
+  if (!job) return "";
+  if (job.status === "failed")
+    return `<p role="alert">文案生成失败：${htmlEscape(job.result?.error || "请重试")}。原投稿资料保留。</p>`;
+  if (["pending", "processing"].includes(job.status))
+    return '<p role="status">正在根据当前已保存字幕生成文案建议…</p>';
+  if (job.payload?.revision !== s.revision || job.result?.revision !== s.revision)
+    return '<p class="hint">片段已修改，旧文案建议不再适用，请重新生成。</p>';
+  const metadata = job.result?.metadata;
+  if (!metadata) return "";
+  return `<h4>文案建议</h4><p><strong>${htmlEscape(metadata.title)}</strong></p><p>${htmlEscape(metadata.description)}</p><p class="hint">TAG：${htmlEscape(metadata.tags.join("，"))}</p><button id="review-metadata-apply" class="btn btn-secondary" type="button">采用建议</button><p class="hint">建议尚未保存，请对照片段核对；采用后仍可修改。</p>`;
+}
+
 async function renderManualWorkbench() {
   clearTimeout(reviewTimer);
   clearTimeout(analysisTimer);
@@ -414,6 +428,17 @@ function updateReviewActions() {
   const save = document.getElementById("review-save");
   const metadataSave = document.getElementById("review-metadata-save");
   if (metadataSave) metadataSave.className = `btn ${review.metadataUnsaved ? "btn-primary" : "btn-secondary"}`;
+  const metadataGenerate = document.getElementById("review-metadata-generate");
+  if (metadataGenerate) {
+    metadataGenerate.disabled = !!(dirty || locked || !subtitleReady);
+    metadataGenerate.textContent = s.active_job?.action === "generate_metadata" ? "正在生成文案…" : "根据当前片段生成文案";
+  }
+  const metadataApply = document.getElementById("review-metadata-apply");
+  if (metadataApply) {
+    metadataApply.disabled = !!(locked || review.unsaved || review.styleUnsaved ||
+      s.metadata_job?.result?.revision !== s.revision);
+    metadataApply.textContent = review.metadataUnsaved ? "采用建议，替换当前文案草稿" : "采用建议";
+  }
   if (save) save.disabled = !!(locked || !document.querySelector("#review-lines tr"));
   const transcribe = document.getElementById("review-transcribe");
   if (transcribe) {
@@ -663,7 +688,7 @@ function reviewMarkup(s, task, lines, initial) {
       dialogHTML("source-dialog", "选择场次", sourceTools)
     );
   const content = s
-    ? `<form id="review-metadata-form" class="metadata-form"><h3>投稿资料</h3><label class="field">标题<input id="review-meta-title" maxlength="80" required value="${htmlEscape(s.title || "")}"></label><label class="field">简介<textarea id="review-meta-description" rows="4" maxlength="2000">${htmlEscape(s.description || "")}</textarea></label><label class="field">TAG<input id="review-meta-tags" value="${htmlEscape((s.tags || []).join("，"))}" placeholder="用逗号分隔，例如：直播切片，雪狐桑"></label><p class="hint">最多 10 个 TAG，每个不超过 20 字。保存投稿资料会同步待确认队列。</p><div class="action-row"><button id="review-metadata-save" class="btn btn-primary" type="submit">保存投稿资料</button><span id="review-metadata-status" role="status" class="muted">已保存的投稿资料</span></div><p class="hint">${s.publish_approval ? "已允许发布，投稿资料受保护。" : "只修改投稿资料，无需重新生成视频。"}</p></form><h3>内容与判断</h3>${definitionRows([
+    ? `<form id="review-metadata-form" class="metadata-form"><h3>投稿资料</h3><label class="field">标题<input id="review-meta-title" maxlength="80" required value="${htmlEscape(s.title || "")}"></label><label class="field">简介<textarea id="review-meta-description" rows="4" maxlength="2000">${htmlEscape(s.description || "")}</textarea></label><label class="field">TAG<input id="review-meta-tags" value="${htmlEscape((s.tags || []).join("，"))}" placeholder="用逗号分隔，例如：直播切片，雪狐桑"></label><p class="hint">最多 10 个 TAG，每个不超过 20 字。保存投稿资料会同步待确认队列。</p><div class="action-row"><button id="review-metadata-generate" class="btn btn-secondary" type="button">根据当前片段生成文案</button><button id="review-metadata-save" class="btn btn-primary" type="submit">保存投稿资料</button><span id="review-metadata-status" role="status" class="muted">已保存的投稿资料</span></div><p class="hint">调用模型，仅根据当前已保存字幕生成建议；请先保存字幕与草稿。</p><div id="review-metadata-suggestion" aria-live="polite">${metadataSuggestionHTML(s)}</div><p class="hint">${s.publish_approval ? "已允许发布，投稿资料受保护。" : "只修改投稿资料，无需重新生成视频。"}</p></form><h3>内容与判断</h3>${definitionRows([
         ["片段状态", reviewStates[s.state] || s.state],
         ["人工依据", s.note || "暂无"],
         ["质量", s.quality ?? s.quality_score ?? "—"],
@@ -1062,6 +1087,18 @@ function drawManualWorkbench() {
     } catch { setMessage("review-metadata-status", "投稿资料未保存 · 草稿存储不可用，请保留文本"); }
     updateReviewActions();
   });
+  document.getElementById("review-metadata-suggestion").onclick = event => {
+    if (!event.target.closest("#review-metadata-apply")) return;
+    const job = s.metadata_job;
+    if (s.active_job || s.publish_approval || s.state === "dropped" || review.unsaved || review.styleUnsaved ||
+        job?.result?.revision !== s.revision || job?.payload?.revision !== s.revision) return;
+    const metadata = job.result.metadata;
+    metadataControls[0].value = metadata.title;
+    metadataControls[1].value = metadata.description;
+    metadataControls[2].value = metadata.tags.join("，");
+    metadataControls[0].oninput();
+    setMessage("review-metadata-status", "已采用文案建议 · 请核对修改后保存");
+  };
   document.getElementById("review-metadata-form").onsubmit = async event => {
     event.preventDefault();
     const button = document.getElementById("review-metadata-save");
@@ -1284,6 +1321,10 @@ function drawManualWorkbench() {
         reviewMessage("请先保存样式草稿");
         return;
       }
+      if (action === "generate_metadata" && review.metadataUnsaved) {
+        reviewMessage("请先保存当前文案草稿，再生成新的建议");
+        return;
+      }
       const j = await mutateReview("/api/actions", {
         action,
         target: s.segment_id,
@@ -1292,7 +1333,8 @@ function drawManualWorkbench() {
       s.active_job = { job_id: j.job_id, status: j.status, action };
       updateReviewActions();
       reviewMessage(action === "transcribe_subtitles"
-        ? "已提交本地字幕识别，完成后会填入草稿。" : "后台任务已提交。");
+        ? "已提交本地字幕识别，完成后会填入草稿。" : action === "generate_metadata"
+        ? "已提交文案生成，结果仅作为建议，不自动保存。" : "后台任务已提交。");
       watchReviewJob(j.job_id);
     } catch (e) {
       if (!stillHere()) return;
@@ -1300,6 +1342,7 @@ function drawManualWorkbench() {
     }
   };
   document.getElementById("review-finalize").onclick = () => submit("finalize");
+  document.getElementById("review-metadata-generate").onclick = () => submit("generate_metadata");
   document.getElementById("review-transcribe").onclick = () => {
     if (collectReviewLines(true).length &&
         !confirm("重新识别会替换当前字幕草稿，服务端已保存的字幕将保留到你点击保存。继续识别？")) return;
@@ -1340,9 +1383,19 @@ async function watchReviewJob(id) {
       review.segment.active_job = { job_id: id, status: j.status, action: j.action };
       updateReviewActions();
       reviewTimer = setTimeout(() => watchReviewJob(id), 2000);
-    } else if (review.unsaved || review.styleUnsaved)
+    } else if (j.action === "generate_metadata") {
+      review.segment.active_job = null;
+      review.segment.metadata_job = {status: j.status, payload: j.payload, result: j.result};
+      const suggestion = document.getElementById("review-metadata-suggestion");
+      if (suggestion) suggestion.innerHTML = metadataSuggestionHTML(review.segment);
+      updateReviewActions();
+      reviewMessage(j.status === "done" ? "文案建议已生成。查看后可采用，原投稿资料保留。"
+        : `文案生成失败：${j.result?.error || "请重试"}。原投稿资料保留。`);
+    } else if (review.unsaved || review.styleUnsaved || review.metadataUnsaved) {
+      review.segment.active_job = null;
+      updateReviewActions();
       reviewMessage("后台任务已结束；当前编辑保留，请保存草稿后刷新查看结果。");
-    else {
+    } else {
       await renderManualWorkbench();
       if (pageKey() === "library")
         reviewMessage(

@@ -88,6 +88,10 @@ class Worker:
             if self.analysis is None:
                 raise PipelineError('local transcription unavailable')
             return self.analysis.transcribe_segment(job)
+        if action == 'generate_metadata':
+            if self.analysis is None:
+                raise PipelineError('文案生成不可用')
+            return self.analysis.generate_segment_metadata(job)
         if action == "remux_recording":
             from bilive.media.remux import remux_recording
             from bilive.domain.models import source_relpath_from_task_id

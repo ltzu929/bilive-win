@@ -104,6 +104,40 @@ class AnalysisPipeline:
         finally:
             audio.unlink(missing_ok=True)
 
+    def generate_segment_metadata(self, job) -> dict:
+        """Return a suggestion without writing metadata, subtitles, final media or approval."""
+        from bilive.analysis.metadata import generate_metadata
+        from bilive.lifecycle.profiles import profile_for_source
+        from bilive.lifecycle.review import SourceReview
+        from bilive.domain.models import task_id_from_source_relpath
+        wb = self.workbench
+
+        def read_current():
+            s = wb.load(job.target)
+            wb.check_revision(s, job.payload['revision'])
+            wb.check_source_idle(s['source_relpath'])
+            if s.get('publish_approval') or s.get('state') == 'dropped':
+                raise PipelineError('当前片段受保护，不能生成文案建议')
+            review = SourceReview(wb).load(task_id_from_source_relpath(s['source_relpath']))
+            if review and review['review_state'] in {'review_complete', 'trash_pending'}:
+                raise PipelineError('源录播审核已结束，不能生成文案建议')
+            saved = wb.subtitles.load(job.target)
+            if s.get('subtitles_revision') != s['revision'] or saved['revision'] != s['revision'] or not saved['lines']:
+                raise PipelineError('请先保存当前片段的字幕，再生成文案建议')
+            return s, saved['lines']
+
+        with wb.lock():
+            segment, lines = read_current()
+            duration = segment['source_end'] - segment['source_start']
+            clamp_subtitle_times([SubtitleLine(v['index'], v['start'], v['end'], v['text']) for v in lines], duration)
+        profile = profile_for_source(wb.videos, segment['source_relpath'])
+        m = self.settings.mimo
+        metadata = generate_metadata(lines, artist=profile.get('display_name') or Path(segment['source_relpath']).parent.name,
+                                     duration=duration, model=m.model, base_url=m.base_url, timeout=m.timeout)
+        with wb.lock():
+            read_current()
+        return {'ok': True, 'revision': job.payload['revision'], 'metadata': metadata}
+
     @_release_asr_after_task
     def transcribe_segment(self, job) -> dict:
         """Recognize only the saved range; return a draft without changing media or approval."""
