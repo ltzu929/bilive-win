@@ -319,6 +319,9 @@ def list_recordings(
         return {"items": [], "total": 0, "limit": limit, "offset": offset}
     items: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*.mp4")):
+        from bilive.recorder.fragments import is_recording_fragment
+        if is_recording_fragment(path):
+            continue
         rel = path.relative_to(root).as_posix()
         items.append(
             {
@@ -723,7 +726,10 @@ def source_recording(task_id: str):
     validate_id(task_id)
     rel = source_relpath_from_task_id(task_id)
     source = workbench.source(rel)
-    files = sorted(workbench.videos.rglob('*.mp4'))
+    from bilive.recorder.fragments import is_recording_fragment
+    files = [p for p in sorted(workbench.videos.rglob('*.mp4')) if not is_recording_fragment(p)]
+    if source not in files:
+        raise HTTPException(status_code=404, detail='recording fragment excluded')
     index = files.index(source)
     return {'task_id':task_id,'source_relpath':rel,'page_offset':(index // 20) * 20}
 

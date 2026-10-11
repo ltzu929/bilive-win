@@ -21,6 +21,11 @@ def queue_completed_recording(videos: Path, jobs, source_path: str):
     if (source.suffix.lower() != '.flv' or source.stem.endswith('_injecting')
             or not re.match(r'^\d+(?:\s*-|$)', source.parent.name) or not source.is_file()):
         return None
+    from bilive.recorder.fragments import is_recording_fragment, quarantine_fragment
+    if is_recording_fragment(source):
+        destination = quarantine_fragment(root, source)
+        logger.info('Short recording fragment excluded: %s', destination)
+        return None
     return jobs.submit('remux_recording', task_id_from_source_relpath(rel.as_posix()), {})
 
 

@@ -82,8 +82,8 @@ def test_native_event_hook_subscribes_disposes_and_retains_job_on_failed_wake(se
 def test_real_remux_waits_for_manual_analysis_and_recovers_after_flv_deletion(setup):
     wb = setup
     source = wb.videos / '123 - 主播/session.flv';source.parent.mkdir()
-    subprocess.run(['ffmpeg','-y','-f','lavfi','-i','testsrc=duration=2:size=160x120:rate=24',
-                    '-f','lavfi','-i','sine=frequency=440:duration=2','-c:v','libx264','-preset','ultrafast',
+    subprocess.run(['ffmpeg','-y','-f','lavfi','-i','testsrc=duration=31:size=160x120:rate=24',
+                    '-f','lavfi','-i','sine=frequency=440:duration=31','-c:v','libx264','-preset','ultrafast',
                     '-c:a','aac','-f','flv',str(source)],capture_output=True,check=True)
     xml = source.with_suffix('.xml');xml.write_text('<i/>')
     job = queue_completed_recording(wb.videos,wb.jobs,str(source))

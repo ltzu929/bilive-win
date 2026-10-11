@@ -256,6 +256,13 @@ def test_empty_segment_can_transcribe_but_stale_or_approved_segment_cannot(env):
 
 def test_full_manual_flow_and_range_stream(env):
     c, w, wb, q = env
+    # The five-second fixture is excluded; a full recording remains selectable.
+    assert c.get('/api/recordings').json()['total'] == 0
+    source = wb.videos / 'session.mp4'
+    extended = wb.videos / 'extended.mp4'
+    subprocess.run(['ffmpeg', '-y', '-stream_loop', '6', '-i', str(source),
+                    '-t', '31', '-c', 'copy', str(extended)], check=True, capture_output=True)
+    extended.replace(source)
     recordings = c.get("/api/recordings").json()
     assert recordings["total"] == 1
     task = recordings["items"][0]["task_id"]
