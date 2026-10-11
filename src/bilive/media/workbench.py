@@ -137,6 +137,7 @@ class Workbench:
                 self.invalidate(s)
                 s["revision"] += 1
                 s["subtitles_revision"] = None
+                s['human_reviewed'] = False
             else:
                 sid = segment_id_from_source_and_range(rel, round(start * 1000), round(end * 1000))
                 validate_id(sid)
@@ -321,6 +322,9 @@ class Workbench:
                 path = self.jobs.root / f"{s['last_job_id']}.{status.value}.json"
                 if path.is_file():
                     job = self.jobs.load_job(path)
+                    s['last_job'] = {'job_id': job.job_id, 'action': job.action,
+                                     'status': status.value, 'revision': job.payload.get('revision'),
+                                     'error': (job.result or {}).get('error'), 'progress': job.progress}
                     if job.action == 'transcribe_subtitles':
                         s['transcription_job'] = {'status': status.value, 'payload': job.payload, 'result': job.result}
                     elif job.action == 'generate_metadata':

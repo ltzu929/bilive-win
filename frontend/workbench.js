@@ -11,6 +11,7 @@ const review = {
   unsaved: false,
   styleUnsaved: false,
   metadataUnsaved: false,
+  rangeUnsaved: false,
   largePlayer: false,
   pickerCollapsed: false,
 };
@@ -164,6 +165,15 @@ const reviewJobStates = {
   done: "已完成",
   failed: "处理失败",
 };
+const actionLabels = {
+  transcribe_subtitles: "字幕识别",
+  finalize: "成片生成",
+  reburn: "成片重烧",
+  render: "成片生成",
+  generate_metadata: "文案生成",
+  retry_judge: "重新判断",
+  approve_publish: "发布批准",
+};
 let reviewTimer;
 const stageLabels = {
   candidate_cut: "候选裁剪",
@@ -215,9 +225,23 @@ const draftKey = () =>
 const styleDraftKey = () =>
   `bilive:style:${review.task?.task_id}:${review.segment?.segment_id}`;
 const metadataDraftKey = () => `bilive:metadata:${review.task?.task_id}:${review.segment?.segment_id}`;
+const rangeDrafts = new Map();
+function captureRangeDraft() {
+  const s = review.segment;
+  const start = document.getElementById("review-start"), end = document.getElementById("review-end");
+  if (!s || !start || !end || document.getElementById("review-source")?.dataset.segment !== s.segment_id) return;
+  if (start.value === timecode(s.source_start) && end.value === timecode(s.source_end))
+    rangeDrafts.delete(s.segment_id);
+  else rangeDrafts.set(s.segment_id, {start: start.value, end: end.value});
+}
+function rangePoint(id, saved) {
+  const input = document.getElementById(id).value.trim();
+  return input === timecode(saved) ? saved : parseTimecode(input);
+}
 function reviewMessage(text) {
   const e = document.getElementById("review-message");
   if (e) e.textContent = text;
+  setMessage("context-feedback", text);
 }
 function collectReviewLines(raw = false) {
   return [...document.querySelectorAll("#review-lines tr")].map((tr) => ({
@@ -275,7 +299,7 @@ function subtitleRows(lines) {
   return lines
     .map(
       (l, i) =>
-        `<tr><td><button class="subtitle-seek text-button" data-subtitle-seek aria-label="定位第${i + 1}行字幕" title="定位到此行字幕">${i + 1}</button></td><td><input aria-label="第${i + 1}行开始时间" data-start value="${htmlEscape(l.startText ?? timecode(l.start, true))}"></td><td><input aria-label="第${i + 1}行结束时间" data-end value="${htmlEscape(l.endText ?? timecode(l.end, true))}"></td><td><textarea aria-label="第${i + 1}行字幕" data-text rows="2">${htmlEscape(l.text)}</textarea></td><td><button class="icon-button" data-delete-line aria-label="删除字幕行">${icon("trash")}</button></td></tr>`,
+        `<tr><td><button class="subtitle-seek text-button" data-subtitle-seek aria-label="定位第${i + 1}行字幕" title="定位到此行字幕">${i + 1}</button></td><td><input aria-label="第${i + 1}行开始时间" data-start value="${htmlEscape(l.startText ?? timecode(l.start, true, true))}"></td><td><input aria-label="第${i + 1}行结束时间" data-end value="${htmlEscape(l.endText ?? timecode(l.end, true, true))}"></td><td><textarea aria-label="第${i + 1}行字幕" data-text rows="2">${htmlEscape(l.text)}</textarea></td><td><button class="icon-button" data-delete-line aria-label="删除字幕行">${icon("trash")}</button></td></tr>`,
     )
     .join("");
 }
@@ -307,6 +331,7 @@ function metadataSuggestionHTML(s) {
 }
 
 async function renderManualWorkbench() {
+  captureRangeDraft();
   clearTimeout(reviewTimer);
   clearTimeout(analysisTimer);
   capturePlayback();
@@ -412,7 +437,7 @@ function updateReviewActions() {
     setMessage("review-message", "");
     return;
   }
-  const dirty = review.unsaved || review.styleUnsaved || review.metadataUnsaved;
+  const dirty = review.unsaved || review.styleUnsaved || review.metadataUnsaved || review.rangeUnsaved;
   const locked = s.publish_approval || s.active_job || s.state === "dropped";
   const subtitleReady = s.subtitles_revision === s.revision && s.subtitles?.length > 0;
   const finalize = document.getElementById("review-finalize"),
@@ -424,7 +449,18 @@ function updateReviewActions() {
   }
   if (approve) approve.disabled = !!(dirty || locked || !s.final_valid);
   const keep = document.getElementById("review-keep");
-  if (keep) keep.disabled = !!(dirty || locked || s.human_reviewed);
+  if (keep) {
+    keep.disabled = !!(dirty || locked || s.human_reviewed);
+    keep.textContent = s.human_reviewed ? "已保留" : "保留并继续";
+    keep.setAttribute("aria-describedby", "context-save");
+  }
+  const rangeSave = document.getElementById("review-range-save");
+  if (rangeSave) {
+    rangeSave.disabled = !!(locked || !review.rangeUnsaved || review.unsaved || review.styleUnsaved || review.metadataUnsaved);
+    rangeSave.className = `btn ${!rangeSave.disabled ? "btn-primary" : "btn-secondary"}`;
+  }
+  for (const id of ["review-start", "review-end", "review-in", "review-out"])
+    document.getElementById(id).disabled = !!locked;
   const save = document.getElementById("review-save");
   const metadataSave = document.getElementById("review-metadata-save");
   if (metadataSave) metadataSave.className = `btn ${review.metadataUnsaved ? "btn-primary" : "btn-secondary"}`;
@@ -463,6 +499,8 @@ function updateReviewActions() {
       ? "已允许发布，当前成片受保护"
       : s.active_job
         ? `后台任务${reviewJobStates[s.active_job.status] || "处理中"}，结束后可继续审核`
+        : review.rangeUnsaved
+          ? "入出点尚未保存，请先保存当前范围"
         : dirty
           ? "先保存当前字幕、样式和投稿资料，再生成成片"
           : !subtitleReady
@@ -473,14 +511,36 @@ function updateReviewActions() {
   );
   for (const button of [finalize, approve])
     if (button) button.setAttribute("aria-describedby", "review-save-hint");
-  setMessage("context-state", reviewStates[s.state] || s.state);
-  setMessage("context-version", `版本 ${s.revision} · ${timecode(s.source_end - s.source_start, true)}`);
-  setMessage("context-save", dirty ? "草稿未保存" : subtitleReady ? "字幕已保存" : "字幕待补充 / 确认");
+  setMessage("context-state", s.active_job ? `${actionLabels[s.active_job.action] || "后台任务"} · ${reviewJobStates[s.active_job.status] || s.active_job.status}`
+    : !locked && !subtitleReady ? "等待补充 / 确认字幕" : reviewStates[s.state] || s.state);
+  setMessage("context-version", `已保存范围 ${timecode(s.source_start)} – ${timecode(s.source_end)} · 版本 ${s.revision} · ${timecode(s.source_end - s.source_start, true)}`);
+  setMessage("context-save", s.state === "dropped" ? "当前片段已废弃"
+    : s.publish_approval ? "已批准发布，当前成片受保护"
+    : s.active_job ? `${actionLabels[s.active_job.action] || "后台任务"}：${reviewJobStates[s.active_job.status] || s.active_job.status}。完成后可继续。`
+    : review.rangeUnsaved ? `新范围 ${document.getElementById("review-start").value} – ${document.getElementById("review-end").value} 尚未保存，请点击“保存当前范围”。`
+    : dirty ? "有未保存草稿，请先保存。当前没有后台任务。"
+    : !subtitleReady ? `${s.human_reviewed ? "已保留。" : ""}等待补充字幕：${review.tab === "subtitles" ? "识别或手动填写并保存" : "点击“检查字幕”，识别或手动填写并保存"}。当前没有后台任务。`
+    : !s.final_valid ? "字幕已保存，等待生成成片：点击“生成成片”。当前没有后台任务。"
+    : "成片已生成，预览确认后可批准发布。当前没有后台任务。");
   const next = document.getElementById("review-next-step");
   if (next) {
-    const target = review.tab === "content" ? "subtitles" : review.tab === "subtitles" ? "final" : "subtitles";
-    next.textContent = target === "subtitles" ? "检查字幕" : "进入成片确认";
-    next.onclick = () => document.querySelector(`[data-review-tab="${target}"]`)?.click();
+    if (review.tab === "subtitles" && !subtitleReady) {
+      const action = review.unsaved ? save : transcribe;
+      next.textContent = review.unsaved ? "保存字幕" : "识别字幕";
+      next.disabled = !action || action.disabled || review.rangeUnsaved;
+      next.onclick = () => action?.click();
+    } else {
+      const target = review.tab === "subtitles" ? "final" : "subtitles";
+      next.disabled = false;
+      next.textContent = target === "subtitles" ? "检查字幕" : "进入成片确认";
+      next.onclick = () => document.querySelector(`[data-review-tab="${target}"]`)?.click();
+    }
+  }
+  if (!s.active_job) {
+    const last = s.last_job;
+    const error = last?.status === "failed" && last.revision === s.revision
+      ? `${actionLabels[last.action] || "后台任务"}失败：${last.error || "请查看处理记录"}。可检查后重试。` : "";
+    setMessage("context-job", error);
   }
   if (approve) {
     approve.textContent = "批准并发布";
@@ -642,7 +702,7 @@ function arrangeReviewWorkbench() {
   });
   const context = document.createElement("aside");
   context.className = "review-context";
-  context.innerHTML = `<h2>${htmlEscape(review.segment?.title || "当前录播")}</h2><p id="context-state" class="muted"></p><p id="context-version" class="num muted"></p><div class="context-range"></div><p class="context-reason">${htmlEscape(review.segment?.quality_reason || review.segment?.note || "请选择候选，结合视频作出人工判断。")}</p><div class="context-decisions"><button id="review-keep" class="btn btn-primary">保留并继续</button></div><p id="context-save" class="muted" role="status"></p><p>播放位置 <span id="context-position" class="num">00:00:00</span></p><button id="review-next-step" class="btn btn-secondary">检查字幕</button>`;
+  context.innerHTML = `<h2>${htmlEscape(review.segment?.title || "当前录播")}</h2><p id="context-state" class="muted"></p><p id="context-version" class="num muted"></p><p id="context-save" class="hint" role="status"></p><div class="context-range"></div><p class="context-reason">${htmlEscape(review.segment?.quality_reason || review.segment?.note || "请选择候选，结合视频作出人工判断。")}</p><div class="context-decisions"><button id="review-keep" class="btn btn-primary">保留并继续</button></div><p id="context-job" role="status"></p><p id="context-feedback" role="status"></p><p>播放位置 <span id="context-position" class="num">00:00:00</span></p><button id="review-next-step" class="btn btn-secondary">检查字幕</button>`;
   const range = grid.querySelector(".range-controls");
   context.querySelector(".context-range").append(range);
   if (drop) context.querySelector(".context-decisions").append(drop);
@@ -705,7 +765,7 @@ function reviewMarkup(s, task, lines, initial) {
       ],
       review.media,
       "data-media-tab",
-    )}<button id="review-large-player" class="btn btn-secondary btn-sm" aria-pressed="${review.largePlayer}">${review.largePlayer ? "返回并排" : "大画面"}</button></div><div class="player-body"><div id="source-media" ${review.media === "source" ? "" : "hidden"}><video id="review-source" data-task="${task.task_id}" data-segment="${s?.segment_id || ""}" controls preload="metadata" src="${htmlEscape(apiURL("/api/media/source/" + task.task_id))}"></video></div><div id="final-media" ${review.media === "final" ? "" : "hidden"}>${s?.final_valid ? `<video id="review-final" controls preload="metadata" src="${htmlEscape(apiURL("/api/media/final/" + s.segment_id + "?revision=" + s.revision))}"></video>` : emptyState("当前无有效成片，保存后需要重新生成")}</div><div class="density-empty"><span class="muted">暂无连续密度数据</span><button class="text-button" id="show-evidence">查看候选统计</button><div class="range-summary"><span id="source-range-start">${timecode(s?.source_start ?? 0)}</span><span>所选源区间</span><span id="source-range-end">${timecode(s?.source_end ?? 1)}</span></div></div><div class="range-controls"><label>源入点<input id="review-start" aria-label="源入点" value="${timecode(s?.source_start ?? 0)}"></label><button class="icon-button" id="review-in" aria-label="当前位置设为入点">${icon("clock")}</button><label>源出点<input id="review-end" aria-label="源出点" value="${timecode(s?.source_end ?? 1)}"></label><button class="icon-button" id="review-out" aria-label="当前位置设为出点">${icon("clock")}</button><button class="btn btn-ghost" data-dialog="points-dialog">${icon("scissors")}补选片段</button></div></div></section>
+    )}<button id="review-large-player" class="btn btn-secondary btn-sm" aria-pressed="${review.largePlayer}">${review.largePlayer ? "返回并排" : "大画面"}</button></div><div class="player-body"><div id="source-media" ${review.media === "source" ? "" : "hidden"}><video id="review-source" data-task="${task.task_id}" data-segment="${s?.segment_id || ""}" controls preload="metadata" src="${htmlEscape(apiURL("/api/media/source/" + task.task_id))}"></video></div><div id="final-media" ${review.media === "final" ? "" : "hidden"}>${s?.final_valid ? `<video id="review-final" controls preload="metadata" src="${htmlEscape(apiURL("/api/media/final/" + s.segment_id + "?revision=" + s.revision))}"></video>` : emptyState("当前无有效成片，保存后需要重新生成")}</div><div class="density-empty"><span class="muted">暂无连续密度数据</span><button class="text-button" id="show-evidence">查看候选统计</button><div class="range-summary"><span id="source-range-start">${timecode(s?.source_start ?? 0)}</span><span>所选源区间</span><span id="source-range-end">${timecode(s?.source_end ?? 1)}</span></div></div><div class="range-controls"><label>源入点<input id="review-start" aria-label="源入点" value="${timecode(s?.source_start ?? 0)}"></label><button class="icon-button" id="review-in" aria-label="当前位置设为入点">${icon("clock")}</button><label>源出点<input id="review-end" aria-label="源出点" value="${timecode(s?.source_end ?? 1)}"></label><button class="icon-button" id="review-out" aria-label="当前位置设为出点">${icon("clock")}</button>${s ? '<button id="review-range-save" class="btn btn-secondary" aria-describedby="context-save">保存当前范围</button>' : ""}<button class="btn btn-ghost" data-dialog="points-dialog">${icon("scissors")}新建补选片段</button></div></div></section>
     <section class="editor-column">${tabsHTML(
       [
         ["content", "内容 / 投稿资料"],
@@ -729,7 +789,7 @@ function reviewMarkup(s, task, lines, initial) {
     dialogHTML(
       "points-dialog",
       "人工补选 / 编辑片段",
-      `<label class="field">标题<input id="review-title" value="${htmlEscape(s?.title || "")}"></label><label class="field">人工补片依据<input id="review-note" value="${htmlEscape(s?.note || "")}" placeholder="为什么保留此区间"></label><p class="muted">入出点使用播放器下方的源时间。</p><div class="dialog-actions"><button id="review-create" class="btn btn-primary">新建人工片段</button>${s ? '<button id="review-range" class="btn btn-secondary">保存当前片段范围</button>' : ""}</div>`,
+      `<label class="field">标题<input id="review-title" value="${htmlEscape(s?.title || "")}"></label><label class="field">人工补片依据<input id="review-note" value="${htmlEscape(s?.note || "")}" placeholder="为什么保留此区间"></label><p class="muted">入出点使用右侧填写的源时间。“新建人工片段”会增加一条候选；修改当前片段请使用“保存当前片段范围”。</p><div class="dialog-actions"><button id="review-create" class="btn btn-primary">新建人工片段</button>${s ? '<button id="review-range" class="btn btn-secondary">保存当前片段范围</button>' : ""}</div>`,
     ) +
     dialogHTML(
       "finish-dialog",
@@ -780,6 +840,7 @@ function drawManualWorkbench() {
   review.unsaved = !!draft;
   review.styleUnsaved = false;
   review.metadataUnsaved = false;
+  review.rangeUnsaved = false;
   main.innerHTML = reviewMarkup(s, task, lines, initial);
   arrangeReviewWorkbench();
   updateRecordingAnalysis();
@@ -1015,29 +1076,61 @@ function drawManualWorkbench() {
     setRangePoint("review-end", source.currentTime);
   const points = async (update) => {
     try {
-      const out = await mutateReview("/api/segments/point", {
+      if (update && (review.unsaved || review.styleUnsaved || review.metadataUnsaved))
+        throw new Error("请先保存字幕、样式和投稿资料草稿，再修改范围");
+      const requested = {
         source_relpath: task.source_relpath,
-        source_start: parseTimecode(
-          document.getElementById("review-start").value,
-        ),
-        source_end: parseTimecode(document.getElementById("review-end").value),
+        source_start: rangePoint("review-start", s?.source_start),
+        source_end: rangePoint("review-end", s?.source_end),
         title: document.getElementById("review-title").value,
         note: document.getElementById("review-note").value,
         ...(update
           ? { segment_id: s.segment_id, expected_revision: s.revision }
           : {}),
-      });
+      };
+      const out = await mutateReview("/api/segments/point", requested);
       review.segment = out;
       await renderManualWorkbench();
+      const saved = review.segment;
+      const matches = saved?.segment_id === out.segment_id &&
+        Math.abs(saved.source_start - requested.source_start) < .005 &&
+        Math.abs(saved.source_end - requested.source_end) < .005;
+      if (!matches) {
+        reviewMessage(`范围未按输入保存。请求范围 ${timecode(requested.source_start)} – ${timecode(requested.source_end)}；请核对上方已保存范围后重试。`);
+        return;
+      }
+      reviewMessage(`${update ? "当前片段范围已保存" : "补选片段已保存"}：${timecode(saved.source_start)} – ${timecode(saved.source_end)}。请检查内容，补充当前范围的字幕并生成成片。`);
     } catch (e) {
       if (!stillHere()) return;
       alert(e.message);
     }
   };
   document.getElementById("review-create").onclick = () => points(false);
+  if (s) {
+    const rangeChanged = () => {
+      try {
+        review.rangeUnsaved = Math.abs(rangePoint("review-start", s.source_start) - s.source_start) > .005 ||
+          Math.abs(rangePoint("review-end", s.source_end) - s.source_end) > .005;
+      } catch { review.rangeUnsaved = true; }
+      updateReviewActions();
+    };
+    for (const id of ["review-start", "review-end"]) document.getElementById(id).oninput = rangeChanged;
+    const rangeDraft = rangeDrafts.get(s.segment_id);
+    if (rangeDraft) {
+      document.getElementById("review-start").value = rangeDraft.start;
+      document.getElementById("review-end").value = rangeDraft.end;
+      rangeChanged();
+    }
+    document.getElementById("review-range-save").onclick = () => {
+      const note = document.getElementById("review-note");
+      if (!note.value.trim()) note.value = s.quality_reason || "人工调整当前片段范围";
+      points(true);
+    };
+  }
   document.querySelectorAll("button.candidate-card[data-segment]").forEach(
     (b) =>
       (b.onclick = () => {
+        captureRangeDraft();
         capturePlayback();
         review.segment = { segment_id: b.dataset.segment };
         renderManualWorkbench();
@@ -1052,7 +1145,7 @@ function drawManualWorkbench() {
     const ordered = refreshed.items.sort((a, b) => a.source_start - b.source_start);
     const index = ordered.findIndex(x => x.segment_id === s.segment_id);
     const next = [...ordered.slice(index + 1), ...ordered.slice(0, index)].find(candidateNeedsReview);
-    review.segment = next || ordered.find(x => x.state !== "dropped") || null;
+    review.segment = next || ordered.find(x => x.segment_id === s.segment_id && x.state !== "dropped") || ordered.find(x => x.state !== "dropped") || null;
     review.tab = next ? "content" : "subtitles";
     review.media = "source";
     await renderManualWorkbench();
@@ -1060,6 +1153,7 @@ function drawManualWorkbench() {
   };
   document.getElementById("review-keep").onclick = async event => {
     event.currentTarget.disabled = true;
+    reviewMessage("正在保存保留决定…");
     try {
       await mutateReview(`/api/segments/${s.segment_id}/keep`, {expected_revision: s.revision});
       await advanceCandidate();
@@ -1313,6 +1407,7 @@ function drawManualWorkbench() {
   };
   const submit = async (action) => {
     try {
+      if (review.rangeUnsaved) throw new Error("请先保存当前范围，再执行后台任务");
       if (review.unsaved || localStorage.getItem(subtitleKey)) {
         reviewMessage("请先保存字幕草稿，再执行成片或发布");
         return;
@@ -1377,8 +1472,9 @@ async function watchReviewJob(id) {
       return;
     setMessage(
       "review-job",
-      `后台任务：${reviewJobStates[j.status] || j.status}${j.progress?.reason ? " · " + j.progress.reason : ""}${j.result?.error ? " · " + j.result.error : ""}`,
+      `${actionLabels[j.action] || "后台任务"}：${reviewJobStates[j.status] || j.status}${j.progress?.reason ? " · " + j.progress.reason : ""}${j.result?.error ? " · " + j.result.error : ""}`,
     );
+    setMessage("context-job", document.getElementById("review-job")?.textContent || "");
     if (["pending", "processing"].includes(j.status)) {
       review.segment.active_job = { job_id: id, status: j.status, action: j.action };
       updateReviewActions();
@@ -1391,7 +1487,7 @@ async function watchReviewJob(id) {
       updateReviewActions();
       reviewMessage(j.status === "done" ? "文案建议已生成。查看后可采用，原投稿资料保留。"
         : `文案生成失败：${j.result?.error || "请重试"}。原投稿资料保留。`);
-    } else if (review.unsaved || review.styleUnsaved || review.metadataUnsaved) {
+    } else if (review.unsaved || review.styleUnsaved || review.metadataUnsaved || review.rangeUnsaved) {
       review.segment.active_job = null;
       updateReviewActions();
       reviewMessage("后台任务已结束；当前编辑保留，请保存草稿后刷新查看结果。");

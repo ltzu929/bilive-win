@@ -44,10 +44,10 @@ function restorePageScroll(page) {
   if (detail && saved.detail != null) detail.scrollTop = saved.detail;
   pageScroll.delete(page);
 }
-function timecode(value, short = false) {
+function timecode(value, short = false, precise = false) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
     return "—";
-  const ms = Math.round(value * 1000),
+  const ms = precise ? Math.round(value * 1000) : Math.floor(value) * 1000,
     sec = Math.floor(ms / 1000);
   const fraction =
     ms % 1000

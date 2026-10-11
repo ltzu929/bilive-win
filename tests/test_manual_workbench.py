@@ -105,6 +105,33 @@ def finalize(client, worker, s):
     return client.get(f"/api/segments/{s['segment_id']}").json()
 
 
+def test_range_change_requires_review_and_subtitles_for_new_revision(env):
+    c, worker, wb, uploads = env
+    s = finalize(c, worker, subtitles(c, create(c)))
+    wb.keep(s['segment_id'], s['revision'])
+    response = c.post('/api/segments/point', json={
+        'source_relpath': 'session.mp4', 'source_start': 0, 'source_end': 3,
+        'title': s['title'], 'note': '扩大范围保留完整内容',
+        'segment_id': s['segment_id'], 'expected_revision': s['revision'],
+    })
+    assert response.status_code == 200, response.text
+    updated = c.get(f"/api/segments/{s['segment_id']}").json()
+    assert updated['segment_id'] == s['segment_id']
+    assert len(wb.list('session.mp4')) == 1
+    assert updated['revision'] == s['revision'] + 1
+    assert not updated['human_reviewed'] and not updated['final_valid']
+    assert updated['subtitles'] == [] and updated['subtitles_revision'] is None
+    kept = c.post(f"/api/segments/{s['segment_id']}/keep", json={
+        'expected_revision': updated['revision'],
+    }).json()
+    assert kept['human_reviewed'] and kept['active_job'] is None
+    assert kept['state'] == 'needs_finalize' and not kept['publish_approval']
+    blocked = c.post('/api/actions', json={
+        'action': 'finalize', 'target': s['segment_id'], 'revision': kept['revision'],
+    })
+    assert blocked.status_code == 409
+
+
 def test_keep_confirms_decision_without_invalidating_subtitles_or_final(env):
     c, worker, wb, uploads = env
     s = finalize(c, worker, subtitles(c, create(c)))
@@ -207,6 +234,11 @@ def test_local_transcription_reports_adapter_error(env):
     assert w.run_once()
     job = c.get(f"/api/actions/{queued['job_id']}").json()
     assert job['status'] == 'failed' and 'decoder compatibility error' in job['result']['error']
+    detail = c.get(f"/api/segments/{s['segment_id']}").json()
+    assert detail['last_job']['status'] == 'failed'
+    assert detail['last_job']['action'] == 'transcribe_subtitles'
+    assert detail['last_job']['revision'] == s['revision']
+    assert 'decoder compatibility error' in detail['last_job']['error']
 
 
 def test_empty_segment_can_transcribe_but_stale_or_approved_segment_cannot(env):
