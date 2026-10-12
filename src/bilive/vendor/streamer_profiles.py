@@ -245,6 +245,7 @@ def default_streamer_profile(room_id: str) -> dict[str, Any]:
         "default_description": "",
         "default_title_template": "",
         "default_tid": None,
+        "default_season": None,
         "default_slice_options": {},
         "default_subtitle_style": {},
         "approved_guidance": "",
@@ -317,6 +318,7 @@ def patch_streamer_profile(
         "default_description",
         "default_title_template",
         "default_tid",
+        "default_season",
         "default_slice_options",
         "default_subtitle_style",
         "approved_guidance",
@@ -328,6 +330,9 @@ def patch_streamer_profile(
     if 'default_title_template' in payload and payload['default_title_template']:
         validate_template(payload['default_title_template'])
     validate_metadata('标题', payload.get('default_description', ''), payload.get('default_tags', []), payload.get('default_tid'))
+    if 'default_season' in payload:
+        from bilive.vendor.upload.publication_options import validate_selections
+        validate_selections(season=payload['default_season'])
 
     def mutate(state: dict[str, Any]) -> dict[str, Any]:
         profile = {**default_streamer_profile(room), **(state.get("profile") or {})}
@@ -355,7 +360,7 @@ def patch_streamer_profile(
         for key in ("default_description", "approved_guidance"):
             if key in payload:
                 profile[key] = str(payload.get(key) or "")
-        for key in ('default_title_template', 'default_tid'):
+        for key in ('default_title_template', 'default_tid', 'default_season'):
             if key in payload:
                 profile[key] = payload[key]
         if "default_slice_options" in payload:

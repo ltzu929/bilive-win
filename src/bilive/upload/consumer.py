@@ -51,6 +51,11 @@ class UploadConsumer:
             self.queue.mark_failed(path, "upload title required")
             return self._status({"status":"failed","error":"upload title required"})
         try:
+            topic = json.loads(claimed['topic']) if claimed.get('topic') else None
+            season = json.loads(claimed['season']) if claimed.get('season') else None
+            if topic or season:
+                options = self.client.publication_options.validate_options(topic, season)
+                metadata['topic'] = options['topic']
             if self.segments_root:
                 # Only trust the segment that owns this exact final artifact.
                 sid = Path(path).parent.name
@@ -95,7 +100,8 @@ class UploadConsumer:
             bvid = data.get("bvid") if isinstance(data,dict) else None
             if not isinstance(bvid,str) or not bvid.strip():
                 raise RuntimeError('B 站返回投稿成功但缺少 BV 号，请核对创作中心投稿记录')
-            self.queue.mark_published(path,bvid)
+            aid = data.get('aid')
+            self.queue.mark_published(path,bvid,aid if type(aid) is int and aid > 0 else None)
         except Exception as exc:
             message = redact(str(exc))
             for value in getattr(self.client,"cookies",{}).values():
@@ -105,12 +111,18 @@ class UploadConsumer:
                 self.settings.retry_base*(2**claimed["attempts"]),time.time())
             return self._status({"status":outcome["stage"],"error":message})
         cleanup_error = None
+        season_result = None
+        if season:
+            from bilive.upload.season import join_published_season
+            season_result = join_published_season(self.queue, self.client, path)
         if self.settings.delete_after_success:
             try:
                 Path(path).unlink(missing_ok=True)
             except OSError:
                 cleanup_error = "published; local cleanup failed"
-        return self._status({"status":"published","bvid":bvid,"cleanup_error":cleanup_error})
+        return self._status({"status":"published","bvid":bvid,"cleanup_error":cleanup_error,
+                             'season_status': season_result.get('season_status') if season_result else None,
+                             'season_error': season_result.get('season_error') if season_result else None})
 
     def _status(self, data):
         if self.status_path:

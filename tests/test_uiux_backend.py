@@ -192,3 +192,99 @@ def test_compact_recording_filename_uses_beijing_time():
     from datetime import datetime, timedelta, timezone
     expected = datetime(2026,10,5,12,tzinfo=timezone(timedelta(hours=8))).timestamp()
     assert _parse_time_from_name('blive_123_2026-10-05-120000.mp4') == expected
+
+
+def test_publication_selections_save_clear_and_preserve_omitted_fields(api_env, monkeypatch):
+    client, wb, _, _, _ = api_env
+    api = importlib.import_module('bilive.api.app')
+    topic = {'id':12, 'name':'测试话题', 'mission_id':34}
+    season = {'id':56, 'title':'合集', 'section_id':78, 'section_title':'正片'}
+    calls = []
+    def validate(**values):
+        calls.append(values)
+        return values
+    options = SimpleNamespace(validate_options=validate,search_topics=lambda *a:{'items':[topic]},
+                              list_seasons=lambda:{'items':[season]})
+    monkeypatch.setattr(api,'publication_client',lambda:SimpleNamespace(publication_options=options))
+    assert client.get('/api/publication/topics?keywords=test').json()['items'] == [topic]
+    assert client.get('/api/publication/seasons').json()['items'] == [season]
+    s = wb.points('session.mp4',0,1,'title','reason')
+    final = str(wb.artifacts / s['segment_id'] / 'final_output.mp4')
+    wb.uploads.stage(final,title='title')
+    s['final_path'] = final
+    wb.save(s)
+    url = f"/api/segments/{s['segment_id']}/metadata"
+    def save(revision, **values):
+        return client.post(url,json={'expected_revision':revision,'title':'title','tags':['切片'],**values})
+    saved = save(1,topic=topic,season=season)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()['topic'] == topic
+    assert json.loads(wb.uploads.get_by_path(final)['season']) == season
+    preserved = save(2)
+    assert preserved.status_code == 200 and preserved.json()['season'] == season
+    assert len(calls) == 1
+    cleared = save(3,topic=None,season=None)
+    assert cleared.status_code == 200 and cleared.json()['topic'] is None
+    assert wb.uploads.get_by_path(final)['season'] is None
+    assert save(3,topic=topic).status_code == 409
+    assert len(calls) == 1
+    assert save(4,season={'id':True,'section_id':78}).status_code == 422
+    wb.uploads.activate(final)
+    assert save(4,topic=topic).status_code == 409
+    assert wb.load(s['segment_id'])['topic'] is None
+
+
+def test_collection_retry_api_only_joins_confirmed_submission(api_env, monkeypatch):
+    from bilive.worker.locks import ProcessLock
+    client, wb, _, _, _ = api_env
+    api = importlib.import_module('bilive.api.app')
+    season = {'id':56,'section_id':78,'title':'合集','section_title':'正片'}
+    path = str(wb.artifacts / 'final.mp4')
+    wb.uploads.stage(path,title='title',season=season)
+    calls = []
+    options = SimpleNamespace(add_to_season=lambda *args:calls.append(args))
+    monkeypatch.setattr(api,'publication_client',lambda:SimpleNamespace(publication_options=options))
+    assert client.post('/api/uploads/retry-season',json={'video_path':path}).status_code == 422
+    assert calls == []
+    wb.uploads.mark_published(path,'BVtest',90)
+    wb.uploads.save_season_result(path,'failed')
+    with ProcessLock(wb.artifacts / 'upload.lock'):
+        response = client.post('/api/uploads/retry-season',json={'video_path':path})
+    assert response.status_code == 200, response.text
+    assert response.json()['season_status'] == 'joined'
+    assert client.post('/api/uploads/retry-season',json={'video_path':path}).json()['stage'] == 'published'
+    assert len(calls) == 1
+
+
+def test_streamer_season_default_validates_live_and_preserves_other_rooms_and_segments(api_env, monkeypatch):
+    from bilive.vendor.streamer_profiles import read_streamer_profile
+    from bilive.vendor.upload.publication_options import PublicationOptionsError
+    client, wb, _, _, _ = api_env
+    api = importlib.import_module('bilive.api.app')
+    season = {'id':56,'section_id':78,'title':'当前合集','section_title':'正片'}
+    calls = []
+    def validate(**values):
+        calls.append(values)
+        if values['season']['id'] != 56:
+            raise PublicationOptionsError('所选合集或小节已不可用，请重新选择')
+        return {'topic':None,'season':season}
+    monkeypatch.setattr(api,'publication_client',lambda:SimpleNamespace(
+        publication_options=SimpleNamespace(validate_options=validate)))
+    url = '/api/streamers/123/profile'
+    saved = client.post(url,json={'default_season':{'id':56,'section_id':78,'title':'旧名称'}})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()['profile']['default_season'] == season
+    assert client.post(url,json={'display_name':'主播'}).json()['profile']['default_season'] == season
+    assert len(calls) == 1  # Omission preserves the selection without requiring login again.
+    (wb.videos / 'blive_123_session.mp4').write_bytes(b'isolated')
+    (wb.videos / 'blive_456_session.mp4').write_bytes(b'isolated')
+    segment = wb.points('blive_123_session.mp4',0,1,'title','reason')
+    assert segment['season'] == season
+    assert wb.points('blive_456_session.mp4',0,1,'title','reason')['season'] is None
+    for value in ({'id':True,'section_id':78}, {'id':99,'section_id':78}):
+        assert client.post(url,json={'default_season':value,'display_name':'不应保存'}).status_code == 422
+        assert read_streamer_profile(wb.videos,'123')['display_name'] == '主播'
+        assert read_streamer_profile(wb.videos,'123')['default_season'] == season
+    assert client.post(url,json={'default_season':None}).json()['profile']['default_season'] is None
+    assert wb.load(segment['segment_id'])['season'] == season
+    assert wb.points('blive_123_session.mp4',1,2,'new','reason')['season'] is None

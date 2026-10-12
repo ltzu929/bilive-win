@@ -176,7 +176,8 @@ class Workbench:
             self.save(s)
             return self.detail(sid)
 
-    def save_metadata(self, sid: str, expected: int, title: str, description: str, tags: list[str], tid: int | None = None) -> dict:
+    def save_metadata(self, sid: str, expected: int, title: str, description: str, tags: list[str], tid: int | None = None,
+                      publication_options: dict | None = None) -> dict:
         title = title.strip()
         tags = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
         if not title or len(title) > 80:
@@ -191,6 +192,13 @@ class Workbench:
             s = self.load(sid)
             self.check_revision(s, expected)
             self.editable(s)
+            options = {key: s.get(key) for key in ('topic', 'season')}
+            if publication_options is not None:
+                options.update(publication_options)
+            from bilive.vendor.upload.publication_options import validate_selections
+            validate_selections(**options)
+            if options['topic'] and len(set([*tags, options['topic']['name']])) > 10:
+                raise ValueError('所选话题也占一个标签，请减少普通 TAG')
             # Publication metadata does not change the video or subtitle text.
             if s.get('final_path'):
                 row = self.uploads.get_by_path(s['final_path'])
@@ -198,11 +206,11 @@ class Workbench:
                     raise ActionConflict('final queue state is unknown')
                 try:
                     self.uploads.stage(s['final_path'], title, description, tags,
-                                       tid=tid if tid is not None else s.get('tid'), cover_path=s.get('cover_path'))
+                                       tid=tid if tid is not None else s.get('tid'), cover_path=s.get('cover_path'), **options)
                 except ValueError as exc:
                     raise ActionConflict(str(exc)) from None
             saved = self.subtitles.load(sid)
-            s.update(title=title, description=description, tags=tags, revision=expected+1)
+            s.update(title=title, description=description, tags=tags, revision=expected+1, **options)
             if tid is not None:
                 s['tid'] = tid
             if s.get('preview', {}).get('revision') == expected:
@@ -410,7 +418,8 @@ class Workbench:
                     from bilive.media.publication import generate_default_cover
                     s['cover_path'] = str(generate_default_cover(Path(result.final_path)))
                     self.uploads.stage(result.final_path, title=s["title"], description=s.get('description', ''),
-                                       tags=s.get('tags', []), tid=s.get('tid'), cover_path=s['cover_path'])
+                                       tags=s.get('tags', []), tid=s.get('tid'), cover_path=s['cover_path'],
+                                       topic=s.get('topic'), season=s.get('season'))
             except Exception:
                 self.save(s)
                 raise

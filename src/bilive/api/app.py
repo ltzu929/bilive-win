@@ -229,12 +229,49 @@ class MetadataRequest(BaseModel):
     description: str = ''
     tags: list[str] = Field(default_factory=list)
     tid: int | None = Field(default=None, ge=1, le=10000)
+    topic: dict | None = None
+    season: dict | None = None
+
+
+def publication_client():
+    from bilive.vendor.upload.bilibili_runtime import BilibiliRuntimeClient
+    from bilive.vendor.upload.cookie import parse_cookie_file
+    from bilive.vendor.upload.publication_options import PublicationOptionsError
+    try:
+        return BilibiliRuntimeClient(cookies=parse_cookie_file(settings.paths.cookie_file or Path('.secrets/bilibili.cookie')))
+    except (OSError, ValueError, KeyError):
+        raise PublicationOptionsError('B 站登录配置不可用，请检查 Cookie') from None
+
+
+@app.get('/api/publication/topics')
+def search_publication_topics(keywords: str = Query(min_length=1, max_length=100), offset: int = Query(0, ge=0)):
+    return publication_client().publication_options.search_topics(keywords.strip(), offset)
+
+
+@app.get('/api/publication/topics/{topic_id}')
+def get_publication_topic(topic_id: int, name: str, mission_id: int = Query(0, ge=0)):
+    return publication_client().publication_options.topic_info({'id': topic_id, 'name': name, 'mission_id': mission_id})
+
+
+@app.get('/api/publication/seasons')
+def list_publication_seasons():
+    return publication_client().publication_options.list_seasons()
 
 
 @app.post('/api/segments/{segment_id}/metadata')
 def save_segment_metadata(segment_id: str, request: MetadataRequest):
+    options = None
+    if {'topic', 'season'} & request.model_fields_set:
+        s = workbench.load(segment_id)
+        workbench.check_revision(s, request.expected_revision)
+        workbench.editable(s)
+        options = {k: getattr(request, k) if k in request.model_fields_set else s.get(k) for k in ('topic', 'season')}
+        from bilive.vendor.upload.publication_options import validate_selections
+        validate_selections(**options)
+        if any(options.values()):
+            options = publication_client().publication_options.validate_options(**options)
     return workbench.save_metadata(segment_id, request.expected_revision,
-                                   request.title, request.description, request.tags, request.tid)
+                                   request.title, request.description, request.tags, request.tid, options)
 
 
 class PreviewRequest(BaseModel):
@@ -497,6 +534,16 @@ def cancel_upload(req: UploadRetryRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
+class SeasonRetryRequest(BaseModel):
+    video_path: str
+
+
+@app.post('/api/uploads/retry-season')
+def retry_upload_season(req: SeasonRetryRequest):
+    from bilive.upload.season import join_published_season
+    return join_published_season(upload_queue, publication_client(), req.video_path)
+
+
 @app.post("/api/worker/wake")
 def wake_worker():
     (worker_control.runtime / 'worker-paused').unlink(missing_ok=True)
@@ -693,6 +740,13 @@ def streamer_profile(room: str):
 @app.post('/api/streamers/{room}/profile')
 def save_streamer_profile(room: str, payload: dict[str, Any]):
     from bilive.vendor import streamer_profiles as profiles
+    profiles._validate_room_id(room)
+    if 'default_season' in payload:
+        from bilive.vendor.upload.publication_options import validate_selections
+        validate_selections(season=payload['default_season'])
+        if payload['default_season'] is not None:
+            payload = {**payload, 'default_season': publication_client().publication_options.validate_options(
+                season=payload['default_season'])['season']}
     profiles.patch_streamer_profile(workbench.videos, room, payload)
     return streamer_profile(room)
 

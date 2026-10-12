@@ -56,7 +56,8 @@ def test_auto_analysis_passes_streamer_hotwords_to_asr_and_correction(setup, pre
     source.rename(named)
     source.with_suffix('.xml').rename(named.with_suffix('.xml'))
     patch_streamer_profile(wb.videos, '123', {'display_name': '主播甲',
-        'subtitle_hotwords': ['白露', '匹诺康尼']})
+        'subtitle_hotwords': ['白露', '匹诺康尼'],
+        'default_season': {'id':56,'section_id':78,'title':'主播甲合集','section_title':'正片'}})
     calls = []
 
     def asr(video, **kw):
@@ -74,6 +75,9 @@ def test_auto_analysis_passes_streamer_hotwords_to_asr_and_correction(setup, pre
     assert any(kind == 'asr' for kind, _ in calls) and any(kind == 'correction' for kind, _ in calls)
     assert all(words == ['主播甲', '白露', '匹诺康尼'] for _, words in calls)
     assert queue.get_by_path(segment['final_path'])['stage'] == 'staged'
+    import json
+    assert json.loads(queue.get_by_path(segment['final_path'])['season']) == segment['season']
+    assert segment['season']['id'] == 56
 
 
 @pytest.fixture
@@ -281,14 +285,17 @@ def test_completed_recording_through_manual_review_publish_and_source_recycle(se
     settings,wb,fin,q=setup
     room=wb.videos/'123 - 隔离测试';room.mkdir()
     flv=room/'session.flv'
-    subprocess.run(['ffmpeg','-y','-i',str(wb.videos/'session.mp4'),'-c','copy','-f','flv',str(flv)],check=True,capture_output=True)
+    # Completion events exclude recordings shorter than 30 seconds. This full
+    # lifecycle fixture must qualify as a recording rather than a fragment.
+    subprocess.run(['ffmpeg','-y','-stream_loop','-1','-i',str(wb.videos/'session.mp4'),
+                    '-t','32','-c','copy','-f','flv',str(flv)],check=True,capture_output=True)
     (wb.videos/'session.xml').rename(room/'session.xml')
     (wb.videos/'session.mp4').unlink()
     settings.video.min_source_size_mb=0  # Small synthetic fixture only.
     settings.analysis.pre_judge_asr=False
     settings.edit.font_size=26
     pipeline=AnalysisPipeline(settings,wb,fin,judge=lambda **kw:[result()],transcribe=lambda video:
-        {'segments':[{'start':0,'end':_ffprobe_duration(video,[]),'text':'需要人工修订'}]})
+        {'segments':[{'start':0,'end':1.8,'text':'需要人工修订'}]})
     recycled=wb.artifacts/'isolated-recycled';recycled.mkdir(parents=True)
     moved=[]
     def move(paths):

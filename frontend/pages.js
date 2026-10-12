@@ -153,6 +153,23 @@ function uploadErrorText(row) {
 function bindPublishDetail(r) {
   if (!r) return;
   const firstSection = document.querySelector('.detail-panel .detail-section');
+  if (firstSection && r.season) {
+    let season;
+    try { season = JSON.parse(r.season); } catch {}
+    if (season) {
+      firstSection.insertAdjacentHTML('afterend', `<section class="detail-section"><h3>加入合集</h3><p>${htmlEscape(season.title)} / ${htmlEscape(season.section_title)}</p><p>${r.season_status === 'joined' ? '已确认加入合集' : r.stage === 'published' ? '投稿已成功，合集关联尚未完成' : '投稿成功后加入合集'}</p>${r.season_error ? `<p class="hint">${htmlEscape(r.season_error)}</p>` : ''}${r.stage === 'published' && r.season_status !== 'joined' ? '<button id="upload-season-retry" class="btn btn-secondary" type="button">重试加入合集</button>' : ''}</section>`);
+      const retry = document.getElementById('upload-season-retry');
+      if (retry) retry.onclick = async () => {
+        retry.disabled = true;
+        try {
+          const result = await reviewAPI('/api/uploads/retry-season', {video_path: r.video_path});
+          if (pageKey() !== 'publish') return;
+          await renderPublish();
+          setMessage('publish-message', result.season_status === 'joined' ? '已确认加入合集。' : `投稿已成功，加入合集未完成：${result.season_error}`);
+        } catch (error) { if (retry.isConnected) { setMessage('publish-message', error.message); retry.disabled = false; } }
+      };
+    }
+  }
   const cancellable = ['staged', 'queued', 'uploaded', 'failed'].includes(r.stage);
   if (firstSection && r.stage !== 'published') {
     const controls = r.stage === 'cancelled'

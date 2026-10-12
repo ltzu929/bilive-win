@@ -61,6 +61,17 @@ class BilibiliWebClient:
                 }
             ],
         }
+        topic = metadata.get('topic')
+        if topic:
+            from bilive.vendor.upload.publication_options import validate_selections
+            validate_selections(topic)
+            tags = list(dict.fromkeys([*(str(payload['tag']).split(',') if payload['tag'] else []), topic['name']]))
+            if len(tags) > 10:
+                raise ValueError('所选话题也占一个标签，请将普通 TAG 减少至 9 个')
+            payload.update(tag=','.join(tags), topic_id=topic['id'],
+                           topic_detail={'from_topic_id': topic['id'], 'from_source': 'arc.web.search'})
+            if topic['mission_id']:
+                payload['mission_id'] = topic['mission_id']
         response = self.session.post(
             WEB_SUBMIT_URL,
             params={

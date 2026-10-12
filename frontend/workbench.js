@@ -485,7 +485,7 @@ function updateReviewActions() {
     transcribe.className = `btn btn-sm ${!subtitleReady && !document.querySelector("#review-lines tr") ? "btn-primary" : "btn-secondary"}`;
   }
   document.querySelectorAll(
-    '#review-lines input, #review-lines textarea, #review-lines [data-delete-line], #review-style, #review-style-save, #review-style-default, #review-drop, #review-drop-open, #review-rejudge, #review-range, #review-add-line, #review-meta-title, #review-meta-description, #review-meta-tags, #review-meta-tid, #review-metadata-save',
+    '#review-lines input, #review-lines textarea, #review-lines [data-delete-line], #review-style, #review-style-save, #review-style-default, #review-drop, #review-drop-open, #review-rejudge, #review-range, #review-add-line, #review-meta-title, #review-meta-description, #review-meta-tags, #review-meta-tid, #review-meta-topic, #review-meta-season, #review-topic-keywords, #review-topic-search, #review-season-load, #review-metadata-save',
   ).forEach((element) => { element.disabled = !!locked; });
   const badge = document.getElementById("review-draft-badge");
   if (badge) {
@@ -1189,12 +1189,30 @@ function drawManualWorkbench() {
   };
   const metadataKey = metadataDraftKey();
   document.getElementById('review-meta-tags').closest('label').insertAdjacentHTML('afterend', `<label class="field">投稿分区<input id="review-meta-tid" type="number" min="1" max="10000" value="${s.tid || ''}"></label>`);
-  const metadataControls = ["title", "description", "tags", "tid"].map(key => document.getElementById(`review-meta-${key}`));
+  const selectionOption = (value, label) => `<option value="${htmlEscape(JSON.stringify(value))}">${htmlEscape(label)}</option>`;
+  const topicLabel = t => `${t.name}${t.mission_id ? ' · 活动' : ''}`;
+  const seasonLabel = t => `${t.title} / ${t.section_title}`;
+  document.getElementById('review-meta-tid').closest('label').insertAdjacentHTML('afterend', `
+    <div class="field"><label for="review-topic-keywords">搜索话题 / 活动</label><div class="action-row"><input id="review-topic-keywords" maxlength="100" placeholder="例如：搞笑研究所"><button id="review-topic-search" class="btn btn-secondary" type="button">搜索话题</button></div></div>
+    <label class="field">参与话题<select id="review-meta-topic"><option value="">不参与话题</option>${s.topic ? selectionOption(s.topic, topicLabel(s.topic)) : ''}</select></label>
+    <p id="review-topic-info" role="status" class="hint">话题占一个标签；活动收录和奖励以活动规则为准。</p>
+    <label class="field">加入合集<select id="review-meta-season"><option value="">不加入合集</option>${s.season ? selectionOption(s.season, seasonLabel(s.season)) : ''}</select></label>
+    <div class="action-row"><button id="review-season-load" class="btn btn-secondary" type="button">读取我的合集</button><span id="review-season-info" role="status" class="hint">投稿成功后加入所选合集。</span></div>`);
+  const metadataControls = ["title", "description", "tags", "tid", "topic", "season"].map(key => document.getElementById(`review-meta-${key}`));
+  if (s.topic) metadataControls[4].value = JSON.stringify(s.topic);
+  if (s.season) metadataControls[5].value = JSON.stringify(s.season);
   let metadataRevision = s.revision;
   try {
     const draft = JSON.parse(localStorage.getItem(metadataKey));
     if (draft) {
-      metadataControls.forEach((control, i) => { if (draft.values[i] != null) control.value = draft.values[i]; });
+      metadataControls.forEach((control, i) => {
+        if (draft.values[i] == null) return;
+        if (i >= 4 && draft.values[i] && ![...control.options].some(o => o.value === draft.values[i])) {
+          const value = JSON.parse(draft.values[i]);
+          control.insertAdjacentHTML('beforeend', selectionOption(value, i === 4 ? topicLabel(value) : seasonLabel(value)));
+        }
+        control.value = draft.values[i];
+      });
       metadataRevision = draft.revision;
       review.metadataUnsaved = true;
       setMessage("review-metadata-status", draft.revision === s.revision ? "已恢复投稿资料草稿" : "草稿版本已变化，请核对并重新编辑后保存");
@@ -1209,6 +1227,50 @@ function drawManualWorkbench() {
     } catch { setMessage("review-metadata-status", "投稿资料未保存 · 草稿存储不可用，请保留文本"); }
     updateReviewActions();
   });
+  const topicInfo = async () => {
+    const value = metadataControls[4].value;
+    if (!value) return setMessage('review-topic-info', '不参与话题。');
+    const topic = JSON.parse(value);
+    setMessage('review-topic-info', '正在核对话题当前状态…');
+    try {
+      const info = await reviewAPI(`/api/publication/topics/${topic.id}?name=${encodeURIComponent(topic.name)}&mission_id=${topic.mission_id}`);
+      if (!stillHere() || metadataControls[4].value !== value) return;
+      setMessage('review-topic-info', [info.description, info.activity_description, info.tips,
+        info.mission_id ? '活动关联不代表已获奖，请核对活动规则。' : '普通话题，无关联活动。'].filter(Boolean).join(' '));
+    } catch (error) { if (stillHere() && metadataControls[4].value === value) setMessage('review-topic-info', `话题核对失败：${error.message}`); }
+  };
+  metadataControls[4].onchange = topicInfo;
+  if (metadataControls[4].value && !s.publish_approval) topicInfo();
+  const updateChoices = (control, items, label, key) => {
+    const selected = control.value;
+    const values = new Map(items.map(item => [key(item), item]));
+    if (selected) { const item = JSON.parse(selected); values.set(key(item), item); }
+    control.innerHTML = `<option value="">${control === metadataControls[4] ? '不参与话题' : '不加入合集'}</option>` + [...values.values()].map(item => selectionOption(item, label(item))).join('');
+    control.value = selected;
+  };
+  document.getElementById('review-topic-search').onclick = async event => {
+    const keywords = document.getElementById('review-topic-keywords').value.trim();
+    if (!keywords) return setMessage('review-topic-info', '请输入话题关键词。');
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await reviewAPI(`/api/publication/topics?keywords=${encodeURIComponent(keywords)}`);
+      if (!stillHere()) return;
+      updateChoices(metadataControls[4], result.items, topicLabel, t => `${t.id}:${t.mission_id}:${t.name}`);
+      setMessage('review-topic-info', `找到 ${result.items.length} 个话题，请从“参与话题”选择。${result.has_more ? '可输入更准确的关键词缩小结果。' : ''}`);
+    } catch (error) { if (stillHere()) setMessage('review-topic-info', `搜索失败：${error.message}`); }
+    finally { if (stillHere()) updateReviewActions(); }
+  };
+  document.getElementById('review-season-load').onclick = async event => {
+    event.currentTarget.disabled = true;
+    try {
+      const result = await reviewAPI('/api/publication/seasons');
+      if (!stillHere()) return;
+      updateChoices(metadataControls[5], result.items, seasonLabel, t => `${t.id}:${t.section_id}`);
+      setMessage('review-season-info', result.items.length ? '已读取，请选择合集和小节。' : '当前账号没有可用合集。');
+    } catch (error) { if (stillHere()) setMessage('review-season-info', `读取失败：${error.message}`); }
+    finally { if (stillHere()) updateReviewActions(); }
+  };
   document.getElementById("review-metadata-suggestion").onclick = event => {
     if (!event.target.closest("#review-metadata-apply")) return;
     const job = s.metadata_job;
@@ -1234,6 +1296,8 @@ function drawManualWorkbench() {
         description: metadataControls[1].value,
         tags: metadataControls[2].value.split(/[,，\n]/).map(t => t.trim()).filter(Boolean),
         tid: metadataControls[3].value ? Number(metadataControls[3].value) : null,
+        topic: metadataControls[4].value ? JSON.parse(metadataControls[4].value) : null,
+        season: metadataControls[5].value ? JSON.parse(metadataControls[5].value) : null,
       });
       localStorage.removeItem(metadataKey);
       await renderManualWorkbench();
@@ -1592,6 +1656,8 @@ async function loadStreamerProfile() {
             `<p><label>${label}<input style="width:100%" data-profile="${key}" value="${htmlEscape(Array.isArray(p[key]) ? p[key].join(",") : p[key])}"></label></p>`,
         )
         .join("")}
+      <p><label for="profile-default-season">默认加入合集</label><select id="profile-default-season" style="width:100%"><option value="">不自动加入合集</option>${p.default_season ? `<option value="${htmlEscape(JSON.stringify(p.default_season))}" selected>${htmlEscape(p.default_season.title || `合集 ${p.default_season.id}`)} / ${htmlEscape(p.default_season.section_title || `小节 ${p.default_season.section_id}`)}</option>` : ''}</select></p>
+      <button id="profile-season-load" type="button" class="btn btn-secondary btn-sm">读取我的合集</button><p id="profile-season-message" role="status" class="hint">用于该主播新建的手动切片和自动切片；单条切片可修改或清空。已有片段保留原选择，投稿前再次验证合集。</p>
       <p><label for="profile-subtitle-hotwords">字幕专名（每行一个）</label><textarea id="profile-subtitle-hotwords" style="width:100%;min-height:120px" data-profile="subtitle_hotwords" aria-describedby="subtitle-hotwords-help" placeholder="常见联动主播名&#10;角色名&#10;游戏名">${htmlEscape((p.subtitle_hotwords || []).join("\n"))}</textarea></p>
       <p id="subtitle-hotwords-help" class="hint">填写正确名称，自动切片和手动识别字幕共用；自动包含上方的主播显示名和别名。常用专名放在前面，避免填写大段说明。修改后用于下一次识别，已有字幕需重新识别。</p>
       ${[
@@ -1617,6 +1683,28 @@ async function loadStreamerProfile() {
       ${data.recommendations.map((r) => `<article><p>${htmlEscape(r.changes?.approved_guidance)}</p><p>状态 ${htmlEscape(r.status)} · 样本 ${r.sample_size}</p><details><summary>查看证据 ID</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(r.evidence_ids, null, 2))}</pre></details><button class="btn btn-secondary" data-apply="${htmlEscape(r.recommendation_id)}" ${r.status === "applied" ? "disabled" : ""}>人工应用建议</button></article>`).join("") || "<p>暂无建议。</p>"}
       <h2>审核经验（共 ${experience.total} 条）</h2>${experience.items.map((e) => `<article><p>${htmlEscape(e.experience_type)} · ${htmlEscape(e.source_rel_path)}</p><p>${htmlEscape(e.note)}</p><details><summary>查看源区间和内容证据</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(e, null, 2))}</pre></details></article>`).join("") || "<p>暂无已保存的人工审核经验。</p>"}<div class="action-row"><button id="experience-prev" class="btn btn-secondary" ${streamerView.offset === 0 ? "disabled" : ""}>上一页</button><button id="experience-next" class="btn btn-secondary" ${streamerView.offset + 20 >= experience.total ? "disabled" : ""}>下一页</button></div></div></div>`;
     const profileForm = document.getElementById("profile-form");
+    document.getElementById('profile-season-load').onclick = async (event) => {
+      const button = event.currentTarget;
+      const select = document.getElementById('profile-default-season');
+      const message = document.getElementById('profile-season-message');
+      const selected = select.value ? JSON.parse(select.value) : null;
+      button.disabled = true;
+      message.textContent = '正在读取当前账号的合集…';
+      try {
+        const data = await reviewAPI('/api/publication/seasons');
+        if (!select.isConnected) return;
+        const items = [...data.items];
+        const current = selected && items.find(item => item.id === selected.id && item.section_id === selected.section_id);
+        if (selected && !current) items.unshift(selected);
+        select.innerHTML = '<option value="">不自动加入合集</option>' + items.map(item => `<option value="${htmlEscape(JSON.stringify(item))}">${htmlEscape(item.title || `合集 ${item.id}`)} / ${htmlEscape(item.section_title || `小节 ${item.section_id}`)}</option>`).join('');
+        select.value = selected ? JSON.stringify(current || selected) : '';
+        message.textContent = selected && !current
+          ? '原选择已不在可用列表中，请重新选择或清空后保存。'
+          : `已读取 ${data.items.length} 个可选小节。选择后点击“保存档案”。`;
+      } catch (error) {
+        if (message.isConnected) message.textContent = `读取失败：${error.message}`;
+      } finally { button.disabled = false; }
+    };
     const publications = data.recent_published || [];
     profileForm.parentElement.insertAdjacentHTML('beforebegin', `<section class="recent-recordings"><h2>最近发布</h2>${publications.map(item => `<a href="https://www.bilibili.com/video/${encodeURIComponent(item.bvid)}" target="_blank" rel="noopener">${htmlEscape(item.title)} · ${beijingTime(item.published_at || Date.parse(item.updated_at)/1000)}</a>`).join('') || '<p class="muted">暂无成功发布记录</p>'}</section>`);
     const advanced = document.createElement("details");
@@ -1655,6 +1743,8 @@ async function loadStreamerProfile() {
               ? JSON.parse(value)
               : key === 'default_tid' ? (value ? Number(value) : null) : value;
         });
+        const season = document.getElementById('profile-default-season').value;
+        payload.default_season = season ? JSON.parse(season) : null;
         await reviewAPI(`/api/streamers/${room}/profile`, payload);
       });
     };

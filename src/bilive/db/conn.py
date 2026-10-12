@@ -68,6 +68,8 @@ def init_upload_db(db_path: Path) -> None:
 def migrate_upload_columns(conn: sqlite3.Connection) -> None:
     """Called only on explicit writes/startup; GET never repairs schema."""
     columns = {row[1] for row in conn.execute('PRAGMA table_info(upload_queue)')}
-    for name, sql_type in {'tid': 'INTEGER', 'cover_path': 'TEXT', 'cover_url': 'TEXT', 'published_at': 'REAL'}.items():
+    for name, sql_type in {'tid': 'INTEGER', 'cover_path': 'TEXT', 'cover_url': 'TEXT', 'published_at': 'REAL',
+                           'topic': 'TEXT', 'season': 'TEXT', 'aid': 'INTEGER',
+                           'season_status': 'TEXT', 'season_error': 'TEXT'}.items():
         if name not in columns:
             conn.execute(f'ALTER TABLE upload_queue ADD COLUMN {name} {sql_type}')

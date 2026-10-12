@@ -6,6 +6,25 @@ import pytest
 from test_manual_workbench import env, create, subtitles, finalize
 
 
+def test_manual_final_inherits_streamer_collection_and_explicit_clear_survives_reburn(env):
+    from bilive.vendor.streamer_profiles import patch_streamer_profile, read_streamer_profile
+    c, worker, wb, queue = env
+    source = wb.videos / 'session.mp4'
+    named = source.with_name('blive_123_session.mp4')
+    source.rename(named)
+    season = {'id':56,'section_id':78,'title':'主播合集','section_title':'正片'}
+    patch_streamer_profile(wb.videos,'123',{'default_season':season})
+    s = wb.points(named.name,.5,2.5,'title','reason')
+    s = finalize(c,worker,subtitles(c,s))
+    assert json.loads(queue.get_by_path(s['final_path'])['season']) == season
+    s = wb.save_metadata(s['segment_id'],s['revision'],s['title'],s['description'],s['tags'],
+                         publication_options={'season':None})
+    assert queue.get_by_path(s['final_path'])['season'] is None
+    s = finalize(c,worker,s)
+    assert queue.get_by_path(s['final_path'])['season'] is None
+    assert read_streamer_profile(wb.videos,'123')['default_season'] == season
+
+
 def test_metadata_updates_staged_queue_and_keeps_final_and_subtitles(env):
     c, worker, wb, q = env
     s = finalize(c, worker, subtitles(c, create(c)))

@@ -45,6 +45,11 @@ def defaults_for_segment(wb, rel: str, title: str, description='', tags=None, se
               'tags': profile.get('default_tags') or defaults.tags or list(tags or []),
               'tid': profile.get('default_tid') or defaults.tid or settings.upload.tid}
     validate_metadata(**result)
+    from copy import deepcopy
+    from bilive.vendor.upload.publication_options import validate_selections
+    season = profile.get('default_season')
+    validate_selections(season=season)
+    result['season'] = deepcopy(season)
     return result
 
 

@@ -47,6 +47,8 @@ class BilibiliRuntimeClient:
             session=self.session,
             csrf=self.cookies["bili_jct"],
         )
+        from bilive.vendor.upload.publication_options import PublicationOptionsClient
+        self.publication_options = PublicationOptionsClient(self.session, self.cookies['bili_jct'])
 
     def check_login(self) -> dict[str, Any] | None:
         response = self.session.get(
