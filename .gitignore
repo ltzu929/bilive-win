@@ -6,6 +6,7 @@ artifacts/
 .bilive-jobs/
 *.db
 *.db-journal
+.season-locks/
 *.pt
 .venv*/
 venv/
