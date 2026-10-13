@@ -9,5 +9,6 @@
 | 2026-10-04 | [手动分析与废弃](20261004-manual-analysis-discard.md)、[工作台前端](20261004-uiux-frontend.md)、[裁剪性能调查](cut-performance-investigation.md) |
 | 2026-10-05 | [配套后端](20261005-uiux-backend.md)、[分析状态反馈](20261005-analysis-feedback.md) |
 | 2026-10-07 / 10-08 | [切片质量与边界保护](clip-quality-improvements-20261007.md) |
+| 2026-10-13 | [分析等待优化](20261013-analysis-wait.md) |
 
 截图和原始结果主要在忽略的 `.runtime/`、`output/`、`artifacts/`，不保证其他机器存在。过去的通过次数不代表当前全量结果；部署与剩余待办以当前说明和实际核对为准。

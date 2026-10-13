@@ -502,18 +502,9 @@ class AnalysisPipeline:
         if pre_asr and event.start <= window_start and event.end >= window_end:
             transcript, origin, window_duration = pre_asr, event.start, event.end-event.start
         else:
-            padded = self.finalizer.artifact_paths(sid)['raw'].with_name('asr_window.mp4')
-            key = {'source':str(source),'start':window_start,'end':window_end}
-            binding = padded.with_suffix('.range.json')
-            if not binding.is_file() or json.loads(binding.read_text(encoding='utf-8')) != key:
-                fresh = padded.with_name('asr_next.mp4')
-                fresh.unlink(missing_ok=True)
-                ensure_raw_cut(source,fresh,window_start,window_end,[])
-                fresh.replace(padded)
-                self._save_history(binding,key)
-            ensure_raw_cut(source, padded, window_start, window_end, [])
             with self.asr_lock:
-                transcript = self._transcribe_for_profile(padded, profile or {})
+                transcript = self._transcribe_for_profile(source, profile or {},
+                    start_seconds=window_start, duration_seconds=window_end-window_start)
             origin, window_duration = window_start, window_end-window_start
         segments = []
         if transcript.get('error'):

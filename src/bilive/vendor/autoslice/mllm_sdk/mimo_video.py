@@ -139,16 +139,18 @@ def _ffmpeg_analysis_copy_command(
 ) -> list[str]:
     from bilive.config.settings import load_settings
     encoder = load_settings().video.encoder
+    hardware = encoder == "h264_nvenc"
     return [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "error",
         "-y",
+        *(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"] if hardware else []),
         "-i",
         str(video_path),
         "-vf",
-        "scale=-2:720",
+        "scale_cuda=-2:720:format=yuv420p:interp_algo=bicubic" if hardware else "scale=-2:720",
         "-c:v",
         encoder,
         "-preset",
@@ -159,8 +161,7 @@ def _ffmpeg_analysis_copy_command(
         video_bitrate,
         "-bufsize",
         _double_bitrate(video_bitrate),
-        "-pix_fmt",
-        "yuv420p",
+        *([] if hardware else ["-pix_fmt", "yuv420p"]),
         "-c:a",
         "aac",
         "-b:a",

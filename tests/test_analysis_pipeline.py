@@ -143,7 +143,7 @@ def test_scene_keeps_one_asr_model_for_candidates_and_formal_recognition(setup, 
 
     def extract(*args, **kwargs):
         path = wb.artifacts / f'audio-{len(recognitions)}.wav'
-        path.write_text('formal' if Path(args[0]).name == 'asr_window.mp4' else 'candidate')
+        path.write_text('formal' if 'duration_seconds' in kwargs else 'candidate')
         return str(path)
 
     monkeypatch.setattr(audio, 'extract_audio', extract)
@@ -246,7 +246,7 @@ def test_subtitle_save_still_blocks_source_recycling(setup):
 
 def run(setup, judge, asr=None):
     settings,wb,fin,q = setup
-    transcript = lambda video: {"transcript":"字幕","segments":[{"start":0.0,"end":_ffprobe_duration(video,[]),"text":"有效字幕"}]}
+    transcript = lambda video, **window: {"transcript":"字幕","segments":[{"start":0.0,"end":window.get("duration_seconds", _ffprobe_duration(video,[])),"text":"有效字幕"}]}
     pipeline = AnalysisPipeline(settings,wb,fin,judge=judge,transcribe=asr or transcript)
     return pipeline.run("session.mp4",task_id_from_source_relpath("session.mp4"))
 
@@ -294,7 +294,7 @@ def test_completed_recording_through_manual_review_publish_and_source_recycle(se
     settings.video.min_source_size_mb=0  # Small synthetic fixture only.
     settings.analysis.pre_judge_asr=False
     settings.edit.font_size=26
-    pipeline=AnalysisPipeline(settings,wb,fin,judge=lambda **kw:[result()],transcribe=lambda video:
+    pipeline=AnalysisPipeline(settings,wb,fin,judge=lambda **kw:[result()],transcribe=lambda video, **window:
         {'segments':[{'start':0,'end':1.8,'text':'需要人工修订'}]})
     recycled=wb.artifacts/'isolated-recycled';recycled.mkdir(parents=True)
     moved=[]
@@ -373,7 +373,7 @@ def test_completed_recording_through_manual_review_publish_and_source_recycle(se
 def test_low_score_never_runs_formal_asr_or_renders(setup):
     setup[0].analysis.pre_judge_asr = False
     calls = []
-    out = run(setup, lambda **kw:[result(quality=0.5)], lambda video:calls.append(video))
+    out = run(setup, lambda **kw:[result(quality=0.5)], lambda video, **window:calls.append(video))
     wb = setup[1]
     s = wb.detail(out["segments"][0])
     assert s["decision"] == "review" and not s["final_valid"]
@@ -388,7 +388,7 @@ def test_empty_result_is_not_drop(setup):
 
 def test_formal_asr_failure_keeps_candidate_and_review_record(setup):
     setup[0].analysis.pre_judge_asr = False
-    out = run(setup, lambda **kw:[result()], lambda video:{"segments":[]})
+    out = run(setup, lambda **kw:[result()], lambda video, **window:{"segments":[]})
     s = setup[1].detail(out["segments"][0])
     assert not s["final_valid"] and s["processing_error"] == "PipelineError"
     assert s['timings']['formal_asr']['status'] == 'failed'
@@ -417,7 +417,7 @@ def test_room_profile_reaches_judge_metadata_and_burned_style(setup):
     def judge(**kwargs):
         seen.append(kwargs);r=result();r.description='';return [r]
     pipeline=AnalysisPipeline(settings,wb,fin,judge=judge,transcribe=lambda video, **kwargs:
-        {'segments':[{'start':0,'end':6 if video.name == 'asr_window.mp4' else 4,'text':'字幕依据'}]})
+        {'segments':[{'start':0,'end':kwargs.get('duration_seconds', 4),'text':'字幕依据'}]})
     rel='123 - 甲/session.mp4';out=pipeline.run(rel,task_id_from_source_relpath(rel))
     assert seen[0]['artist'] == '主播甲' and seen[0]['guidance'] == '保留完整话题'
     s=wb.detail(out['segments'][0]);row=q.get_by_path(s['final_path'])
@@ -466,8 +466,8 @@ def test_padding_snap_and_subtitle_offset_use_real_media(setup,monkeypatch,snap_
     fresh.replace(source)
     monkeypatch.setattr(module,'detect_bursts',lambda *a,**kw:[event(0,6)])
     seen=[]
-    def asr(video):
-        seen.append(_ffprobe_duration(video,[]))
+    def asr(video, **window):
+        seen.append(window['duration_seconds'])
         if cue_layout == 'chat_context':
             # Inner boundaries are closer, but must not erase the setup/response.
             return {'segments': [
@@ -536,7 +536,7 @@ def test_configured_request_concurrency_is_real_and_bounded(setup,monkeypatch,wo
             barrier.wait(timeout=15);time.sleep(.05);return [result(.2,1.5,.5)]
         finally:
             with lock:active-=1
-    pipeline=AnalysisPipeline(settings,wb,fin,judge=judge,transcribe=lambda video:pytest.fail('low score must not ASR'))
+    pipeline=AnalysisPipeline(settings,wb,fin,judge=judge,transcribe=lambda video, **window:pytest.fail('low score must not ASR'))
     out=pipeline.run('session.mp4',task_id_from_source_relpath('session.mp4'))
     assert peak == workers and out['candidates'] == 3 and out['requires_source_review']
     assert len(wb.list('session.mp4')) == 3 and q.claim_next() is None
@@ -548,7 +548,7 @@ def test_cross_candidate_duplicate_chooses_score_before_formal_asr(setup,monkeyp
     monkeypatch.setattr(module,'detect_bursts',lambda *a,**kw:[event(0,4),event(1,5)])
     def judge(**kw):return [result(1,3,.85)] if kw['candidate_start'] == 0 else [result(.2,2.2,.98)]
     asr_calls=[]
-    def asr(video):
+    def asr(video, **window):
         asr_calls.append(video);return {'segments':[{'start':0,'end':6,'text':'字幕'}]}
     pipeline=AnalysisPipeline(settings,wb,fin,judge=judge,transcribe=asr)
     out=pipeline.run('session.mp4',task_id_from_source_relpath('session.mp4'))
@@ -565,7 +565,7 @@ def test_cross_candidate_duplicate_chooses_score_before_formal_asr(setup,monkeyp
 ])
 def test_bad_formal_timestamps_preserve_review_material(setup,timestamps):
     setup[0].analysis.pre_judge_asr=False
-    out=run(setup,lambda **kw:[result()],lambda video:{'segments':timestamps})
+    out=run(setup,lambda **kw:[result()],lambda video, **window:{'segments':timestamps})
     s=setup[1].detail(out['segments'][0])
     assert s['processing_error'] == 'PipelineError' and not s['final_valid']
     assert Path(s['candidate_path']).exists() and setup[3].claim_next() is None
@@ -578,7 +578,7 @@ def test_failed_or_timestamp_changing_correction_keeps_original(setup,monkeypatc
     def correct(segments,**kw):
         segments[0].start=99;return segments
     pipeline=AnalysisPipeline(settings,wb,fin,judge=lambda **kw:[result(1,3)],
-        transcribe=lambda video:{'segments':[{'start':0,'end':6,'text':'原始字幕'}]},correct=correct)
+        transcribe=lambda video, **window:{'segments':[{'start':0,'end':6,'text':'原始字幕'}]},correct=correct)
     out=pipeline.run('session.mp4',task_id_from_source_relpath('session.mp4'));s=wb.detail(out['segments'][0])
     assert s['final_valid'] and s['subtitles'][0]['text'] == '原始字幕' and s['subtitles'][0]['start'] == 0
     assert s['alignment']['correction'] == 'failed_original_retained'
@@ -588,7 +588,7 @@ def test_invalid_auxiliary_asr_does_not_block_valid_formal_pass(setup,monkeypatc
     settings,wb,fin,q=setup
     monkeypatch.setattr(module,'detect_bursts',lambda *a,**kw:[event(0,6)])
     calls=[]
-    def asr(video):
+    def asr(video, **window):
         calls.append(video.name)
         return {'error':'auxiliary failed','segments':[]} if video.name.startswith('candidate-') else {'segments':[{'start':0,'end':6,'text':'正式字幕'}]}
     out=run(setup,lambda **kw:[result(1,3)],asr)
@@ -605,7 +605,7 @@ def test_successful_light_correction_is_text_only_and_persisted(setup,monkeypatc
     settings,wb,fin,q=setup;settings.analysis.pre_judge_asr=False;settings.subtitle.light_correct=True
     monkeypatch.setattr(module,'detect_bursts',lambda *a,**kw:[event(0,6)])
     pipeline=AnalysisPipeline(settings,wb,fin,judge=lambda **kw:[result(1,3)],
-        transcribe=lambda video:{'segments':[{'start':0,'end':6,'text':'专名错字'}]},
+        transcribe=lambda video, **window:{'segments':[{'start':0,'end':6,'text':'专名错字'}]},
         correct=lambda segments,**kw:[TranscriptSegment(v.start,v.end,'正确专名') for v in segments])
     out=pipeline.run('session.mp4',task_id_from_source_relpath('session.mp4'));s=wb.detail(out['segments'][0])
     assert s['subtitles'][0]['text'] == '正确专名' and s['subtitles'][0]['start'] == 0
@@ -618,7 +618,7 @@ def test_alignment_created_duplicate_retains_subtitles_but_does_not_render(setup
     settings,wb,fin,q=setup;settings.analysis.pre_judge_asr=False;settings.subtitle.snap_tolerance=3
     monkeypatch.setattr(module,'detect_bursts',lambda *a,**kw:[event(0,6)])
     pipeline=AnalysisPipeline(settings,wb,fin,judge=lambda **kw:[result(1.5,2.5),result(3,4)],
-        transcribe=lambda video:{'segments':[{'start':0,'end':6,'text':'话题字幕'}]})
+        transcribe=lambda video, **window:{'segments':[{'start':0,'end':6,'text':'话题字幕'}]})
     out=pipeline.run('session.mp4',task_id_from_source_relpath('session.mp4'))
     segments=wb.list('session.mp4');loser=next(s for s in segments if s['processing_stage'] == 'duplicate_review')
     assert loser['decision'] == 'review' and loser['final_path'] is None

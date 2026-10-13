@@ -89,6 +89,16 @@ def test_analysis_video_uses_selected_encoder_and_preserves_bitrate_limit(monkey
         assert command[command.index('-preset')+1] == preset
         assert command[command.index('-maxrate')+1] == '900k'
         assert command[command.index('-bufsize')+1] == '1800k'
+        if encoder == 'h264_nvenc':
+            assert command[command.index('-hwaccel')+1] == 'cuda'
+            assert command[command.index('-hwaccel_output_format')+1] == 'cuda'
+            assert command[command.index('-vf')+1] == 'scale_cuda=-2:720:format=yuv420p:interp_algo=bicubic'
+            assert '-pix_fmt' not in command  # CUDA frames must stay on the GPU.
+        else:
+            assert '-hwaccel' not in command
+            assert command[command.index('-vf')+1] == 'scale=-2:720'
+            assert command[command.index('-pix_fmt')+1] == 'yuv420p'
+        assert '-r' not in command  # Keep source frames and the audio timeline.
 
 
 def test_server_config_exports_mimo_settings():

@@ -63,6 +63,8 @@ MiMo 请求与分析副本编码并发分别配置。Whisper 在同一场分析�
 
 Worker 默认低于正常优先级；项目 FFmpeg 转码串行，软件解码、编码与滤镜线程上限为 4。裁剪和烧录读取 `[video].encoder`：代码默认 `libx264`，仓库模板为 `h264_nvenc`，环境覆盖为 `BILIVE_VIDEO_ENCODER`。NVENC 使用 p5/VBR CQ 26，输出 yuv420p H.264；硬件不可用报告失败，不自动重复转码。CQ 与 x264 CRF 不等价。
 
+正式字幕需要补识别时，直接从源录播提取带 padding 的音频区间，不再先转码中间视频；有效辅助字幕仍优先复用。MiMo 的 720p 分析副本在选择 `h264_nvenc` 时使用 CUDA 解码、缩放与 NVENC 编码，需要 FFmpeg 提供 `scale_cuda` 和可用的 NVIDIA 解码运行环境；软件编码路径继续使用 CPU 缩放。分析副本保留源帧率、原有视频码率限制与音频参数，不改变 MiMo 的采样 FPS 或选段策略。实测范围见 [分析等待优化](../history/20261013-analysis-wait.md)。
+
 录制器、工作台、Worker 和上传进程启动时清除本进程代理变量并设置 `NO_PROXY=*`，不修改系统代理或其他应用。TUN/透明代理需要在代理软件中单独保持 Bilive 流量直连。
 
 后续模型研究见 [MiMo 优化方向](../development/optimization.md#mimo-后续优化方向)。
