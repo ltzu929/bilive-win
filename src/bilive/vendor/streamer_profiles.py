@@ -508,7 +508,10 @@ def _normalize_subtitle_style(value: Any) -> dict[str, Any]:
     from bilive.vendor.subtitle_style import validate_style
     validate_style(value)
 
-    return SubtitleStyle.from_mapping(value).to_mapping()
+    # Profile styles are overrides: absent fields must keep inheriting the
+    # global style, including when the user clears the override with {}.
+    normalized = SubtitleStyle.from_mapping(value).to_mapping()
+    return {key: normalized[key] for key in value}
 
 
 def _number(value: Any) -> float | None:

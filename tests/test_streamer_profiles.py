@@ -79,6 +79,41 @@ def test_subtitle_style_is_written_and_rejects_injection(tmp_path):
         with pytest.raises(ValueError):profiles.patch_streamer_profile(tmp_path,'123',{'default_subtitle_style':appearance})
 
 
+@pytest.mark.parametrize('override', [{}, {'outline': 3}, {'font_size': 32}])
+def test_profile_style_api_preserves_only_explicit_overrides(tmp_path, monkeypatch, override):
+    import importlib
+    api = importlib.import_module('bilive.api.app')
+    videos = tmp_path / 'Videos'
+    source = videos / '123 - test/session.mp4'
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b'isolated fixture')
+    artifacts = tmp_path / 'artifacts'
+    db = tmp_path / 'queue.db'
+    init_upload_db(db)
+    subs = SubtitleStore(artifacts / 'subtitles')
+    wb = Workbench(videos, artifacts, ActionJobStore(tmp_path / 'jobs'), subs, UploadQueue(db))
+    global_style = {'font_name': 'Microsoft YaHei', 'font_size': 80, 'margin_v': 110, 'outline': 2}
+    wb.default_style_provider = lambda: dict(global_style)
+    monkeypatch.setattr(api, 'workbench', wb)
+    url = '/api/streamers/123/profile'
+    with TestClient(api.app) as client:
+        # Clearing an existing style must restore inheritance, not insert size 20.
+        assert client.post(url, json={'default_subtitle_style': {'font_size': 20}}).status_code == 200
+        assert client.post(url, json={'default_subtitle_style': override}).status_code == 200
+        assert client.get(url).json()['profile']['default_subtitle_style'] == override
+        assert client.post(url, json={'display_name': 'test'}).status_code == 200
+        assert client.get(url).json()['profile']['default_subtitle_style'] == override
+    segment = wb.points('123 - test/session.mp4', 0, 2, 'test', 'test')
+    assert segment['subtitle_style'] == {**global_style, **override}
+    subs.save(segment['segment_id'], 2, [SubtitleLine(1, 0, 1, 'test')], segment['revision'])
+    ass = subs.write_ass(segment['segment_id'], tmp_path / 'subtitle.ass', segment['subtitle_style'])
+    assert f"Style: Default,Microsoft YaHei,{override.get('font_size', 80)}," in ass.read_text(encoding='utf-8')
+    global_style['font_size'] = 96
+    later = wb.points('123 - test/session.mp4', 2, 4, 'later', 'test')
+    assert later['subtitle_style']['font_size'] == override.get('font_size', 96)
+    assert wb.load(segment['segment_id']) == segment
+
+
 def test_profile_api_persistence_and_cross_origin_protection(tmp_path,monkeypatch):
     import importlib
     api = importlib.import_module('bilive.api.app')

@@ -428,6 +428,31 @@ def test_room_profile_reaches_judge_metadata_and_burned_style(setup):
     assert json.loads(paths['meta'].read_text(encoding='utf-8'))['subtitle_style']['font_size'] == 32
 
 
+@pytest.mark.parametrize('override', [{}, {'outline': 3}])
+def test_analysis_inherits_global_style_after_profile_style_save(setup, override):
+    import json
+    from bilive.vendor import streamer_profiles as profiles
+    settings, wb, fin, q = setup
+    old = wb.videos / 'session.mp4'
+    room = wb.videos / '123 - test'
+    room.mkdir()
+    old.rename(room / 'session.mp4')
+    old.with_suffix('.xml').rename(room / 'session.xml')
+    profiles.patch_streamer_profile(wb.videos, '123', {'default_subtitle_style': override})
+    global_style = {'font_name': 'Microsoft YaHei', 'font_size': 80, 'margin_v': 110, 'outline': 2}
+    wb.default_style_provider = lambda: dict(global_style)
+    pipeline = AnalysisPipeline(settings, wb, fin, judge=lambda **kw: [result()],
+        transcribe=lambda video, **kw: {'segments': [{'start': 0, 'end': 4, 'text': '字幕依据'}]})
+    rel = '123 - test/session.mp4'
+    out = pipeline.run(rel, task_id_from_source_relpath(rel))
+    segment = wb.detail(out['segments'][0])
+    assert segment['subtitle_style'] == {**global_style, **override}
+    assert segment['final_valid'] and q.get_by_path(segment['final_path'])['stage'] == 'staged'
+    paths = fin.artifact_paths(segment['segment_id'])
+    assert 'Style: Default,Microsoft YaHei,80,' in paths['ass'].read_text(encoding='utf-8')
+    assert json.loads(paths['meta'].read_text(encoding='utf-8'))['subtitle_style'] == segment['subtitle_style']
+
+
 def test_room_density_overrides_are_isolated(setup,monkeypatch):
     from bilive.vendor import streamer_profiles as profiles
     from bilive.analysis import pipeline as module
