@@ -375,6 +375,10 @@ class Workbench:
             return s['preview']
 
     def execute(self, job, finalizer: Finalizer) -> dict:
+        with self.segment_lock(job.target):
+            return self._execute(job, finalizer)
+
+    def _execute(self, job, finalizer: Finalizer) -> dict:
         with self.lock():
             s = self.load(job.target)
             self.check_revision(s, job.payload["revision"])
@@ -406,29 +410,31 @@ class Workbench:
                 raise PipelineError("upload title required; edit the segment title")
             self.invalidate(s)
             self.save(s)
-            try:
-                with timed_stage(s,'manual_finalize'):
-                    result = finalizer.reburn(s["segment_id"], s["source_relpath"],
-                                              s["source_start"], s["source_end"], s["revision"])
-            except Exception:
-                self.save(s)
-                raise
-            # A failed queue write keeps the media but cannot authorize it.
-            s.update(state="staging_failed", final_path=None, final_revision=None,
-                     generated_path=result.final_path)
+        # The segment lock and durable active job protect this media while
+        # unrelated approvals continue without waiting for FFmpeg.
+        try:
+            with timed_stage(s,'manual_finalize'):
+                result = finalizer.reburn(s["segment_id"], s["source_relpath"],
+                                          s["source_start"], s["source_end"], s["revision"])
+        except Exception:
             self.save(s)
-            try:
-                with timed_stage(s,'stage'):
-                    from bilive.media.publication import generate_default_cover
-                    s['cover_path'] = str(generate_default_cover(Path(result.final_path)))
-                    self.uploads.stage(result.final_path, title=s["title"], description=s.get('description', ''),
-                                       tags=s.get('tags', []), tid=s.get('tid'), cover_path=s['cover_path'],
-                                       topic=s.get('topic'), season=s.get('season'), dynamic=s.get('dynamic', ''))
-            except Exception:
-                self.save(s)
-                raise
-            s.update(state="awaiting_publish", final_path=result.final_path,
-                     final_revision=s["revision"], decision='manual_keep')
+            raise
+        # A failed queue write keeps the media but cannot authorize it.
+        s.update(state="staging_failed", final_path=None, final_revision=None,
+                 generated_path=result.final_path)
+        self.save(s)
+        try:
+            with timed_stage(s,'stage'):
+                from bilive.media.publication import generate_default_cover
+                s['cover_path'] = str(generate_default_cover(Path(result.final_path)))
+                self.uploads.stage(result.final_path, title=s["title"], description=s.get('description', ''),
+                                   tags=s.get('tags', []), tid=s.get('tid'), cover_path=s['cover_path'],
+                                   topic=s.get('topic'), season=s.get('season'), dynamic=s.get('dynamic', ''))
+        except Exception:
             self.save(s)
-            return {"ok": True, "final_path": result.final_path, "revision": s["revision"],
-                    "upload_stage": "staged"}
+            raise
+        s.update(state="awaiting_publish", final_path=result.final_path,
+                 final_revision=s["revision"], decision='manual_keep')
+        self.save(s)
+        return {"ok": True, "final_path": result.final_path, "revision": s["revision"],
+                "upload_stage": "staged"}

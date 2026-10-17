@@ -340,26 +340,29 @@ class AnalysisPipeline:
             profile = profile_for_source(self.workbench.videos,rel)
             event = SimpleNamespace(start=start,end=end,burst_start=s['core_start'],burst_end=s['core_end'])
             entry = {}
-            prepared = self._prepare(source,rel,event,candidate,entry,read_danmaku(source.with_suffix('.xml')),profile)
-            if prepared.get('error'):
-                raise PipelineError('candidate rejudgment failed: '+prepared['error'])
-            results = prepared.get('results') or []
-            for result in results:
-                self._quality_review(result)
-                trim = result.suggested_trim
-                if trim and (not all(isinstance(t,(int,float)) and math.isfinite(t) for t in (trim.trim_start,trim.trim_end))
-                             or not 0 <= trim.trim_start < trim.trim_end <= end-start+0.01):
-                    result.judge_status = 'review'
-                    result.retain_recommendation = False
-                    result.judge_error = 'invalid judgment range'
-            record = {'job_id':job.job_id,'segment_id':s['segment_id'],'revision':s['revision'],
-                      'candidate_start':start,'candidate_end':end,'results':[asdict(r) for r in results],
-                      'empty_requires_review':not results,'pre_asr_failed':entry.get('pre_asr_failed',False)}
-            record_path = self.workbench.artifacts / 'rejudgments' / f'{job.job_id}.json'
-            record_path.parent.mkdir(parents=True,exist_ok=True)
-            self._save_history(record_path,record)
-            # Rejudgment provides new evidence. Applying a range still uses the
-            # explicit manual-edit path; existing subtitles/finals stay versioned.
+        prepared = self._prepare(source,rel,event,candidate,entry,read_danmaku(source.with_suffix('.xml')),profile)
+        if prepared.get('error'):
+            raise PipelineError('candidate rejudgment failed: '+prepared['error'])
+        results = prepared.get('results') or []
+        for result in results:
+            self._quality_review(result)
+            trim = result.suggested_trim
+            if trim and (not all(isinstance(t,(int,float)) and math.isfinite(t) for t in (trim.trim_start,trim.trim_end))
+                         or not 0 <= trim.trim_start < trim.trim_end <= end-start+0.01):
+                result.judge_status = 'review'
+                result.retain_recommendation = False
+                result.judge_error = 'invalid judgment range'
+        record = {'job_id':job.job_id,'segment_id':s['segment_id'],'revision':s['revision'],
+                  'candidate_start':start,'candidate_end':end,'results':[asdict(r) for r in results],
+                  'empty_requires_review':not results,'pre_asr_failed':entry.get('pre_asr_failed',False)}
+        record_path = self.workbench.artifacts / 'rejudgments' / f'{job.job_id}.json'
+        record_path.parent.mkdir(parents=True,exist_ok=True)
+        self._save_history(record_path,record)
+        # Rejudgment provides new evidence. Applying a range still uses the
+        # explicit manual-edit path; existing subtitles/finals stay versioned.
+        with self.workbench.lock():
+            s = self.workbench.load(job.target)
+            self.workbench.check_revision(s, job.payload['revision'])
             s['latest_rejudgment'] = json.loads(record_path.read_text(encoding='utf-8'))
             self.workbench.save(s)
             return {'ok':True,'result_count':len(results),'requires_manual_application':True}

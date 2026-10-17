@@ -171,9 +171,10 @@ class Worker:
 
         raise PipelineError(f"unsupported action: {action}")
 
-    def run_once(self) -> bool:
+    def run_once(self, *, approval_only: bool | None = None) -> bool:
         """领取并执行一个任务；无任务返回 False。"""
-        lock = ProcessLock(self.lock_path)
+        lock = ProcessLock(self.lock_path.with_suffix('.approval.lock')
+                           if approval_only else self.lock_path)
         try:
             lock.acquire(timeout=0.2)
         except LockUnavailable:
@@ -184,7 +185,9 @@ class Worker:
                 owner_lock = ProcessLock(self.jobs.root / "owners" / f"{self.worker_id}.lock")
                 owner_lock.acquire()
             self.jobs.requeue_orphans(time.time(), stale_seconds=0)
-            job = self.jobs.claim(self.worker_id, self.preflight)
+            action_filter = (None if approval_only is None else
+                             lambda action: (action == 'approve_publish') == approval_only)
+            job = self.jobs.claim(self.worker_id, self.preflight, action_filter=action_filter)
             if job is None:
                 return False
             try:
@@ -214,18 +217,47 @@ class Worker:
         self._owner_lease = ProcessLock(self.jobs.root / "owners" / f"{self.worker_id}.lock")
         try:
             self._owner_lease.acquire()
-            return self._drain(idle_timeout, idle_check_interval, max_jobs)
+            # Bounded batch verification keeps deterministic job counts. The
+            # long-running service gives approvals their own execution lane.
+            if max_jobs is not None:
+                return self._drain(idle_timeout, idle_check_interval, max_jobs)
+            approval_stop = threading.Event()
+            errors = []
+            def approvals():
+                try:
+                    while not self.stop_event.is_set() and not approval_stop.is_set():
+                        did = self.run_once(approval_only=True)
+                        # Starting/monitoring uploads must also continue while
+                        # the heavy lane is inside analysis or GPU preflight.
+                        self.on_tick()
+                        if not did:
+                            approval_stop.wait(0.2)
+                except Exception as exc:
+                    errors.append(exc)
+                    self.stop()
+            thread = threading.Thread(target=approvals, name='publish-approvals')
+            thread.start()
+            try:
+                processed = self._drain(idle_timeout, idle_check_interval, max_jobs,
+                                        separate_approvals=True)
+            finally:
+                approval_stop.set()
+                thread.join()
+            if errors:
+                raise errors[0]
+            return processed
         finally:
             self._owner_lease.release()
             self._owner_lease = None
             instance.release()
 
-    def _drain(self, idle_timeout, idle_check_interval, max_jobs):
+    def _drain(self, idle_timeout, idle_check_interval, max_jobs, *, separate_approvals=False):
         processed = 0
         last_check = time.time()
         while not self.stop_event.is_set():
-            self.on_tick()
-            did = self.run_once()
+            if not separate_approvals:
+                self.on_tick()
+            did = self.run_once(approval_only=False if separate_approvals else None)
             if did:
                 processed += 1
                 if max_jobs is not None and processed >= max_jobs:

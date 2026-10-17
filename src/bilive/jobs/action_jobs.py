@@ -71,6 +71,9 @@ class ActionJobStore:
         for path in self._iter_status(status):
             try:
                 valid.append((path, self.load_job(path)))
+            except FileNotFoundError:
+                # Another execution lane may have just moved this job.
+                continue
             except (ValueError, KeyError, TypeError):
                 if quarantine:
                     folder = self.root / "quarantine"
@@ -154,13 +157,15 @@ class ActionJobStore:
         )
         os.replace(tmp, path)
 
-    def claim(self, owner: str, preflight=None) -> ActionJob | None:
+    def claim(self, owner: str, preflight=None, *, action_filter=None) -> ActionJob | None:
         """按创建次序领取；两领取者仅一成功。"""
         from bilive.worker.locks import ProcessLock
         with ProcessLock(self.root / 'queue.lock'):
             pending = sorted(self.valid_jobs(ActionJobStatus.PENDING, quarantine=True),
                              key=lambda item: (item[1].created_at, item[0].stat().st_mtime_ns))
         for path, job in pending:
+            if action_filter is not None and not action_filter(job.action):
+                continue
             # Loading a local GPU model may take seconds. Keep submissions and
             # cancellation available, then recheck the durable state before claim.
             ready, reason = preflight(job) if preflight else (True, "")
