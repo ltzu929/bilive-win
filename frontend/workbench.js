@@ -10,7 +10,6 @@ const review = {
   media: "source",
   unsaved: false,
   styleUnsaved: false,
-  metadataUnsaved: false,
   rangeUnsaved: false,
   largePlayer: false,
   pickerCollapsed: false,
@@ -224,7 +223,6 @@ const draftKey = () =>
   `bilive:subtitle:${review.task?.task_id}:${review.segment?.segment_id}`;
 const styleDraftKey = () =>
   `bilive:style:${review.task?.task_id}:${review.segment?.segment_id}`;
-const metadataDraftKey = () => `bilive:metadata:${review.task?.task_id}:${review.segment?.segment_id}`;
 const rangeDrafts = new Map();
 function captureRangeDraft() {
   const s = review.segment;
@@ -438,7 +436,7 @@ function updateReviewActions() {
     setMessage("review-message", "");
     return;
   }
-  const dirty = review.unsaved || review.styleUnsaved || review.metadataUnsaved || review.rangeUnsaved;
+  const dirty = review.unsaved || review.styleUnsaved || review.rangeUnsaved;
   const locked = s.publish_approval || s.active_job || s.state === "dropped";
   const subtitleReady = s.subtitles_revision === s.revision && s.subtitles?.length > 0;
   const finalize = document.getElementById("review-finalize"),
@@ -448,7 +446,7 @@ function updateReviewActions() {
     finalize.textContent = s.final_valid ? "重新生成成片" : "生成成片";
     finalize.className = `btn ${!dirty && !locked && subtitleReady && !s.final_valid ? "btn-primary" : "btn-secondary"}`;
   }
-  if (approve) approve.disabled = !!(dirty || locked || !s.final_valid);
+  if (approve) approve.disabled = !s.publish_approval && !!(dirty || locked || !s.final_valid);
   const keep = document.getElementById("review-keep");
   if (keep) {
     keep.disabled = !!(dirty || locked || s.human_reviewed);
@@ -457,25 +455,12 @@ function updateReviewActions() {
   }
   const rangeSave = document.getElementById("review-range-save");
   if (rangeSave) {
-    rangeSave.disabled = !!(locked || !review.rangeUnsaved || review.unsaved || review.styleUnsaved || review.metadataUnsaved);
+    rangeSave.disabled = !!(locked || !review.rangeUnsaved || review.unsaved || review.styleUnsaved);
     rangeSave.className = `btn ${!rangeSave.disabled ? "btn-primary" : "btn-secondary"}`;
   }
   for (const id of ["review-start", "review-end", "review-in", "review-out"])
     document.getElementById(id).disabled = !!locked;
   const save = document.getElementById("review-save");
-  const metadataSave = document.getElementById("review-metadata-save");
-  if (metadataSave) metadataSave.className = `btn ${review.metadataUnsaved ? "btn-primary" : "btn-secondary"}`;
-  const metadataGenerate = document.getElementById("review-metadata-generate");
-  if (metadataGenerate) {
-    metadataGenerate.disabled = !!(dirty || locked || !subtitleReady);
-    metadataGenerate.textContent = s.active_job?.action === "generate_metadata" ? "正在生成文案…" : "根据当前片段生成文案";
-  }
-  const metadataApply = document.getElementById("review-metadata-apply");
-  if (metadataApply) {
-    metadataApply.disabled = !!(locked || review.unsaved || review.styleUnsaved ||
-      s.metadata_job?.result?.revision !== s.revision);
-    metadataApply.textContent = review.metadataUnsaved ? "采用建议，替换当前文案草稿" : "采用建议";
-  }
   if (save) save.disabled = !!(locked || !document.querySelector("#review-lines tr"));
   const transcribe = document.getElementById("review-transcribe");
   if (transcribe) {
@@ -485,7 +470,7 @@ function updateReviewActions() {
     transcribe.className = `btn btn-sm ${!subtitleReady && !document.querySelector("#review-lines tr") ? "btn-primary" : "btn-secondary"}`;
   }
   document.querySelectorAll(
-    '#review-lines input, #review-lines textarea, #review-lines [data-delete-line], #review-style, #review-style-save, #review-style-default, #review-drop, #review-drop-open, #review-rejudge, #review-range, #review-add-line, #review-meta-title, #review-meta-description, #review-meta-tags, #review-meta-tid, #review-meta-topic, #review-meta-season, #review-topic-keywords, #review-topic-search, #review-season-load, #review-metadata-save',
+    '#review-lines input, #review-lines textarea, #review-lines [data-delete-line], #review-style, #review-style-save, #review-style-default, #review-drop, #review-drop-open, #review-rejudge, #review-range, #review-add-line',
   ).forEach((element) => { element.disabled = !!locked; });
   const badge = document.getElementById("review-draft-badge");
   if (badge) {
@@ -503,12 +488,12 @@ function updateReviewActions() {
         : review.rangeUnsaved
           ? "入出点尚未保存，请先保存当前范围"
         : dirty
-          ? "先保存当前字幕、样式和投稿资料，再生成成片"
+          ? "先保存当前字幕和样式，再生成成片"
           : !subtitleReady
             ? "先补充并保存当前片段字幕，再生成成片"
             : !s.final_valid
               ? "核对内容与字幕后，生成成片预览"
-              : "先播放当前成片，确认后允许发布",
+              : "先播放当前成片，确认后进入投稿页",
   );
   for (const button of [finalize, approve])
     if (button) button.setAttribute("aria-describedby", "review-save-hint");
@@ -522,7 +507,7 @@ function updateReviewActions() {
     : dirty ? "有未保存草稿，请先保存。当前没有后台任务。"
     : !subtitleReady ? `${s.human_reviewed ? "已保留。" : ""}等待补充字幕：${review.tab === "subtitles" ? "识别或手动填写并保存" : "点击“检查字幕”，识别或手动填写并保存"}。当前没有后台任务。`
     : !s.final_valid ? "字幕已保存，等待生成成片：点击“生成成片”。当前没有后台任务。"
-    : "成片已生成，预览确认后可批准发布。当前没有后台任务。");
+    : "成片已生成，预览确认后可进入投稿页。当前没有后台任务。");
   const next = document.getElementById("review-next-step");
   if (next) {
     if (review.tab === "subtitles" && !subtitleReady) {
@@ -544,7 +529,7 @@ function updateReviewActions() {
     setMessage("context-job", error);
   }
   if (approve) {
-    approve.textContent = "批准并发布";
+    approve.textContent = s.publish_approval ? "查看发布进度" : "去投稿";
     approve.className = `btn ${!dirty && !locked && s.final_valid ? "btn-primary" : "btn-secondary"}`;
   }
   if (save) save.className = `btn ${review.tab === "subtitles" && !locked ? "btn-primary" : "btn-secondary"}`;
@@ -645,7 +630,7 @@ async function watchRecordingAnalysis(taskId, epoch) {
     review.analysisSegments = data.items;
     review.evidence = evidence;
     const ended = !["pending", "processing"].includes(data.analysis_job?.status);
-    const editing = review.unsaved || review.styleUnsaved || review.metadataUnsaved || analysisInputSnapshot() !== review.analysisInputs || document.querySelector("dialog[open]");
+    const editing = review.unsaved || review.styleUnsaved || analysisInputSnapshot() !== review.analysisInputs || document.querySelector("dialog[open]");
     // Poll only status while working. Rebuild at completion only when no draft is being edited.
     if (ended && !editing && !review.segment?.active_job) {
       review.analysisPlaybackTask = taskId;
@@ -705,11 +690,11 @@ function arrangeReviewWorkbench() {
   const footer = candidates.querySelector(".workbench-actions");
   const job = document.getElementById("review-job");
   const content = document.getElementById("content-panel");
-  const metadata = content.querySelector(".metadata-form");
+  const metadata = content.querySelector(".submission-summary");
   const finalPanel = document.createElement("div");
   finalPanel.id = "final-panel";
   finalPanel.hidden = review.tab !== "final";
-  finalPanel.innerHTML = '<h3>成片确认</h3><p class="muted">在上方切换到当前成片预览，核对投稿资料后批准并发布。</p>';
+  finalPanel.innerHTML = '<h3>成片确认</h3><p class="muted">在上方预览当前成片，确认画面和字幕后进入投稿页。</p>';
   if (review.segment) {
     const s = review.segment;
     finalPanel.insertAdjacentHTML('beforeend', `<p id="final-preview-status" role="status">${s.preview_complete ? "已完整预览" : "尚未完整预览"} · 预览记录不影响人工批准</p>${s.cover_path ? `<figure><img src="${apiURL(`/api/segments/${s.segment_id}/cover`)}?revision=${s.revision}" alt="系统生成的默认封面" style="max-width:240px"><figcaption>系统默认封面</figcaption></figure>` : '<p class="muted">生成成片时自动生成默认封面。</p>'}`);
@@ -773,7 +758,7 @@ function reviewMarkup(s, task, lines, initial) {
       dialogHTML("source-dialog", "选择场次", sourceTools)
     );
   const content = s
-    ? `<form id="review-metadata-form" class="metadata-form"><h3>投稿资料</h3><label class="field">标题<input id="review-meta-title" maxlength="80" required value="${htmlEscape(s.title || "")}"></label><label class="field">简介<textarea id="review-meta-description" rows="4" maxlength="2000">${htmlEscape(s.description || "")}</textarea></label><label class="field">TAG<input id="review-meta-tags" value="${htmlEscape((s.tags || []).join("，"))}" placeholder="用逗号分隔，例如：直播切片，雪狐桑"></label><p class="hint">最多 10 个 TAG，每个不超过 20 字。保存投稿资料会同步待确认队列。</p><div class="action-row"><button id="review-metadata-generate" class="btn btn-secondary" type="button">根据当前片段生成文案</button><button id="review-metadata-save" class="btn btn-primary" type="submit">保存投稿资料</button><span id="review-metadata-status" role="status" class="muted">已保存的投稿资料</span></div><p class="hint">调用模型，仅根据当前已保存字幕生成建议；请先保存字幕与草稿。</p><div id="review-metadata-suggestion" aria-live="polite">${metadataSuggestionHTML(s)}</div><p class="hint">${s.publish_approval ? "已允许发布，投稿资料受保护。" : "只修改投稿资料，无需重新生成视频。"}</p></form><h3>内容与判断</h3>${definitionRows([
+    ? `${submissionSummaryHTML(s)}<h3>内容与判断</h3>${definitionRows([
         ["片段状态", reviewStates[s.state] || s.state],
         ["人工依据", s.note || "暂无"],
         ["质量", s.quality ?? s.quality_score ?? "—"],
@@ -799,7 +784,7 @@ function reviewMarkup(s, task, lines, initial) {
       review.tab,
       "data-review-tab",
     )}<div class="editor-body"><div class="section-heading"><h2>${htmlEscape(s?.title || "片段编辑")} <span id="review-draft-badge" class="badge orange">草稿未保存</span></h2><span class="hint">时间相对片段起点 ${icon("info-circle")}</span></div><div id="subtitle-panel" ${review.tab === "subtitles" ? "" : "hidden"}>${s ? `<div class="subtitle-empty" id="subtitle-empty" ${lines.length ? "hidden" : ""}>${s.state === "dropped" ? `<strong>当前片段已废弃</strong><p>${htmlEscape(s.drop_reason || "人工判断无需切片")}。源录播保留，本片段不再生成成片或发布。</p>` : `<strong>当前片段还没有字幕</strong><p>点击“本地模型识别字幕”自动转写当前片段，也可试听后手工添加。核对并保存字幕后才能生成成片。</p>`}</div><div class="subtitle-scroll" ${lines.length ? "" : "hidden"}><table class="list subtitle-table"><thead><tr><th>定位</th><th>开始时间</th><th>结束时间</th><th>字幕内容</th><th></th></tr></thead><tbody id="review-lines">${subtitleRows(lines)}</tbody></table></div><div class="subtitle-actions"><button id="review-transcribe" class="btn btn-primary btn-sm">本地模型识别字幕</button><button id="review-add-line" class="btn btn-secondary btn-sm">${icon("plus")}添加字幕行</button><button id="review-save" class="btn btn-primary">保存字幕</button></div><p class="hint subtitle-help">识别当前已保存的片段范围 · 结果填入草稿，核对后保存</p><p class="hint subtitle-help">点击行号定位字幕 · 时间从片段起点 00:00 计时</p><p class="hint save-note">${icon("info-circle")}保存字幕会使旧成片失效，需要重新生成</p>` : emptyState("选择或创建片段后编辑字幕")}</div><div id="content-panel" ${review.tab === "content" ? "" : "hidden"}>${content}<div class="evidence-section">${reviewEvidenceHTML()}</div></div><p id="review-message" role="status">${initial}</p></div></section></div>
-    <section class="candidate-panel card"><h3>片段候选 <span class="muted">（共 ${review.segments.length} 个）</span></h3><div class="candidate-navigation"><button class="icon-button" id="candidate-prev" aria-label="向前滚动候选">${icon("chevron-left")}</button><div class="candidate-strip">${review.segments.map((x, i) => `<button class="candidate-card ${x.segment_id === s?.segment_id ? "selected" : ""}" data-segment="${x.segment_id}" aria-pressed="${x.segment_id === s?.segment_id}" title="${htmlEscape(x.title || "人工片段")}"><strong>${i + 1}. ${htmlEscape(x.title || "人工片段")}</strong><span class="num">${timecode(x.source_start)} – ${timecode(x.source_end)}</span>${statusBadge(x.publish_approval ? "已允许发布" : reviewStates[x.state] || x.state, x.publish_approval ? "green" : x.state === "dropped" ? "muted" : x.state === "awaiting_publish" ? "purple" : "blue")}</button>`).join("") || '<p id="candidate-empty" class="muted"></p>'}</div><button class="icon-button" id="candidate-next" aria-label="向后滚动候选">${icon("chevron-right")}</button></div><footer class="workbench-actions"><p class="hint">${icon("info-circle")}可在内容页查看 AI 判断与质量</p><div class="action-row"><span id="review-save-hint" class="muted" role="status"></span>${s ? '<button id="review-drop-open" class="btn btn-secondary">废弃当前片段</button><button id="review-finalize" class="btn btn-muted">重新生成成片</button><button id="review-approve" class="btn btn-primary">允许发布</button>' : ""}</div></footer><p id="review-job" role="status"></p></section>` +
+    <section class="candidate-panel card"><h3>片段候选 <span class="muted">（共 ${review.segments.length} 个）</span></h3><div class="candidate-navigation"><button class="icon-button" id="candidate-prev" aria-label="向前滚动候选">${icon("chevron-left")}</button><div class="candidate-strip">${review.segments.map((x, i) => `<button class="candidate-card ${x.segment_id === s?.segment_id ? "selected" : ""}" data-segment="${x.segment_id}" aria-pressed="${x.segment_id === s?.segment_id}" title="${htmlEscape(x.title || "人工片段")}"><strong>${i + 1}. ${htmlEscape(x.title || "人工片段")}</strong><span class="num">${timecode(x.source_start)} – ${timecode(x.source_end)}</span>${statusBadge(x.publish_approval ? "已允许发布" : reviewStates[x.state] || x.state, x.publish_approval ? "green" : x.state === "dropped" ? "muted" : x.state === "awaiting_publish" ? "purple" : "blue")}</button>`).join("") || '<p id="candidate-empty" class="muted"></p>'}</div><button class="icon-button" id="candidate-next" aria-label="向后滚动候选">${icon("chevron-right")}</button></div><footer class="workbench-actions"><p class="hint">${icon("info-circle")}可在内容页查看 AI 判断与质量</p><div class="action-row"><span id="review-save-hint" class="muted" role="status"></span>${s ? '<button id="review-drop-open" class="btn btn-secondary">废弃当前片段</button><button id="review-finalize" class="btn btn-muted">重新生成成片</button><button id="review-approve" class="btn btn-primary">去投稿</button>' : ""}</div></footer><p id="review-job" role="status"></p></section>` +
     dialogHTML(
       "source-dialog",
       "场次与分析管理",
@@ -864,7 +849,6 @@ function drawManualWorkbench() {
       : s ? "等待补充 / 确认当前片段字幕" : "";
   review.unsaved = !!draft;
   review.styleUnsaved = false;
-  review.metadataUnsaved = false;
   review.rangeUnsaved = false;
   main.innerHTML = reviewMarkup(s, task, lines, initial);
   arrangeReviewWorkbench();
@@ -1000,7 +984,6 @@ function drawManualWorkbench() {
   document.getElementById("review-finish").onclick = async () => {
     const e = document.getElementById("source-review-message");
     try {
-      if (review.metadataUnsaved) throw new Error("请先保存投稿资料草稿");
       if (s && (review.unsaved || localStorage.getItem(subtitleKey)))
         throw new Error("请先保存当前字幕草稿");
       if (s && (review.styleUnsaved || localStorage.getItem(styleKey)))
@@ -1104,7 +1087,7 @@ function drawManualWorkbench() {
     setRangePoint("review-end", source.currentTime);
   const points = async (update) => {
     try {
-      if (update && (review.unsaved || review.styleUnsaved || review.metadataUnsaved))
+      if (update && (review.unsaved || review.styleUnsaved))
         throw new Error("请先保存字幕、样式和投稿资料草稿，再修改范围");
       const requested = {
         source_relpath: task.source_relpath,
@@ -1187,131 +1170,10 @@ function drawManualWorkbench() {
       await advanceCandidate();
     } catch (error) { if (stillHere()) { updateReviewActions(); reviewMessage(`保留未保存：${error.message}`); } }
   };
-  const metadataKey = metadataDraftKey();
-  document.getElementById('review-meta-tags').closest('label').insertAdjacentHTML('afterend', `<label class="field">投稿分区<input id="review-meta-tid" type="number" min="1" max="10000" value="${s.tid || ''}"></label>`);
-  const selectionOption = (value, label) => `<option value="${htmlEscape(JSON.stringify(value))}">${htmlEscape(label)}</option>`;
-  const topicLabel = t => `${t.name}${t.mission_id ? ' · 活动' : ''}`;
-  const seasonLabel = t => `${t.title} / ${t.section_title}`;
-  document.getElementById('review-meta-tid').closest('label').insertAdjacentHTML('afterend', `
-    <div class="field"><label for="review-topic-keywords">搜索话题 / 活动</label><div class="action-row"><input id="review-topic-keywords" maxlength="100" placeholder="例如：搞笑研究所"><button id="review-topic-search" class="btn btn-secondary" type="button">搜索话题</button></div></div>
-    <label class="field">参与话题<select id="review-meta-topic"><option value="">不参与话题</option>${s.topic ? selectionOption(s.topic, topicLabel(s.topic)) : ''}</select></label>
-    <p id="review-topic-info" role="status" class="hint">话题占一个标签；活动收录和奖励以活动规则为准。</p>
-    <label class="field">加入合集<select id="review-meta-season"><option value="">不加入合集</option>${s.season ? selectionOption(s.season, seasonLabel(s.season)) : ''}</select></label>
-    <div class="action-row"><button id="review-season-load" class="btn btn-secondary" type="button">读取我的合集</button><span id="review-season-info" role="status" class="hint">投稿成功后加入所选合集。</span></div>`);
-  const metadataControls = ["title", "description", "tags", "tid", "topic", "season"].map(key => document.getElementById(`review-meta-${key}`));
-  if (s.topic) metadataControls[4].value = JSON.stringify(s.topic);
-  if (s.season) metadataControls[5].value = JSON.stringify(s.season);
-  let metadataRevision = s.revision;
-  try {
-    const draft = JSON.parse(localStorage.getItem(metadataKey));
-    if (draft) {
-      metadataControls.forEach((control, i) => {
-        if (draft.values[i] == null) return;
-        if (i >= 4 && draft.values[i] && ![...control.options].some(o => o.value === draft.values[i])) {
-          const value = JSON.parse(draft.values[i]);
-          control.insertAdjacentHTML('beforeend', selectionOption(value, i === 4 ? topicLabel(value) : seasonLabel(value)));
-        }
-        control.value = draft.values[i];
-      });
-      metadataRevision = draft.revision;
-      review.metadataUnsaved = true;
-      setMessage("review-metadata-status", draft.revision === s.revision ? "已恢复投稿资料草稿" : "草稿版本已变化，请核对并重新编辑后保存");
-    }
-  } catch {}
-  metadataControls.forEach(control => control.oninput = () => {
-    review.metadataUnsaved = true;
-    metadataRevision = s.revision;
-    try {
-      localStorage.setItem(metadataKey, JSON.stringify({revision: s.revision, values: metadataControls.map(c => c.value)}));
-      setMessage("review-metadata-status", "投稿资料未保存 · 草稿保存在此浏览器");
-    } catch { setMessage("review-metadata-status", "投稿资料未保存 · 草稿存储不可用，请保留文本"); }
-    updateReviewActions();
-  });
-  const topicInfo = async () => {
-    const value = metadataControls[4].value;
-    if (!value) return setMessage('review-topic-info', '不参与话题。');
-    const topic = JSON.parse(value);
-    setMessage('review-topic-info', '正在核对话题当前状态…');
-    try {
-      const info = await reviewAPI(`/api/publication/topics/${topic.id}?name=${encodeURIComponent(topic.name)}&mission_id=${topic.mission_id}`);
-      if (!stillHere() || metadataControls[4].value !== value) return;
-      setMessage('review-topic-info', [info.description, info.activity_description, info.tips,
-        info.mission_id ? '活动关联不代表已获奖，请核对活动规则。' : '普通话题，无关联活动。'].filter(Boolean).join(' '));
-    } catch (error) { if (stillHere() && metadataControls[4].value === value) setMessage('review-topic-info', `话题核对失败：${error.message}`); }
-  };
-  metadataControls[4].onchange = topicInfo;
-  if (metadataControls[4].value && !s.publish_approval) topicInfo();
-  const updateChoices = (control, items, label, key) => {
-    const selected = control.value;
-    const values = new Map(items.map(item => [key(item), item]));
-    if (selected) { const item = JSON.parse(selected); values.set(key(item), item); }
-    control.innerHTML = `<option value="">${control === metadataControls[4] ? '不参与话题' : '不加入合集'}</option>` + [...values.values()].map(item => selectionOption(item, label(item))).join('');
-    control.value = selected;
-  };
-  document.getElementById('review-topic-search').onclick = async event => {
-    const keywords = document.getElementById('review-topic-keywords').value.trim();
-    if (!keywords) return setMessage('review-topic-info', '请输入话题关键词。');
-    const button = event.currentTarget;
-    button.disabled = true;
-    try {
-      const result = await reviewAPI(`/api/publication/topics?keywords=${encodeURIComponent(keywords)}`);
-      if (!stillHere()) return;
-      updateChoices(metadataControls[4], result.items, topicLabel, t => `${t.id}:${t.mission_id}:${t.name}`);
-      setMessage('review-topic-info', `找到 ${result.items.length} 个话题，请从“参与话题”选择。${result.has_more ? '可输入更准确的关键词缩小结果。' : ''}`);
-    } catch (error) { if (stillHere()) setMessage('review-topic-info', `搜索失败：${error.message}`); }
-    finally { if (stillHere()) updateReviewActions(); }
-  };
-  document.getElementById('review-season-load').onclick = async event => {
-    event.currentTarget.disabled = true;
-    try {
-      const result = await reviewAPI('/api/publication/seasons');
-      if (!stillHere()) return;
-      updateChoices(metadataControls[5], result.items, seasonLabel, t => `${t.id}:${t.section_id}`);
-      setMessage('review-season-info', result.items.length ? '已读取，请选择合集和小节。' : '当前账号没有可用合集。');
-    } catch (error) { if (stillHere()) setMessage('review-season-info', `读取失败：${error.message}`); }
-    finally { if (stillHere()) updateReviewActions(); }
-  };
-  document.getElementById("review-metadata-suggestion").onclick = event => {
-    if (!event.target.closest("#review-metadata-apply")) return;
-    const job = s.metadata_job;
-    if (s.active_job || s.publish_approval || s.state === "dropped" || review.unsaved || review.styleUnsaved ||
-        job?.result?.revision !== s.revision || job?.payload?.revision !== s.revision) return;
-    const metadata = job.result.metadata;
-    metadataControls[0].value = metadata.title;
-    metadataControls[1].value = metadata.description;
-    metadataControls[2].value = metadata.tags.join("，");
-    metadataControls[0].oninput();
-    setMessage("review-metadata-status", "已采用文案建议 · 请核对修改后保存");
-  };
-  document.getElementById("review-metadata-form").onsubmit = async event => {
-    event.preventDefault();
-    const button = document.getElementById("review-metadata-save");
-    try {
-      if (review.unsaved || review.styleUnsaved) throw new Error("请先保存字幕和样式草稿，再保存投稿资料");
-      if (metadataRevision !== s.revision) throw new Error("投稿资料草稿版本已变化，请核对并重新编辑后保存");
-      button.disabled = true;
-      await mutateReview(`/api/segments/${s.segment_id}/metadata`, {
-        expected_revision: s.revision,
-        title: metadataControls[0].value,
-        description: metadataControls[1].value,
-        tags: metadataControls[2].value.split(/[,，\n]/).map(t => t.trim()).filter(Boolean),
-        tid: metadataControls[3].value ? Number(metadataControls[3].value) : null,
-        topic: metadataControls[4].value ? JSON.parse(metadataControls[4].value) : null,
-        season: metadataControls[5].value ? JSON.parse(metadataControls[5].value) : null,
-      });
-      localStorage.removeItem(metadataKey);
-      await renderManualWorkbench();
-      setMessage("review-metadata-status", "投稿资料已保存");
-    } catch (error) {
-      if (!stillHere()) return;
-      updateReviewActions();
-      setMessage("review-metadata-status", `保存失败：${error.message}。草稿保留。`);
-    }
-  };
   const styleEditor = document.getElementById("review-style");
   document.getElementById('review-style-default').onclick = async () => {
     try {
-      if (review.unsaved || review.styleUnsaved || review.metadataUnsaved) throw new Error('请先保存字幕、样式和投稿资料草稿');
+      if (review.unsaved || review.styleUnsaved) throw new Error('请先保存字幕、样式和投稿资料草稿');
       const config = await reviewAPI('/api/config/summary');
       await mutateReview(`/api/segments/${s.segment_id}/style`, {
         expected_revision: s.revision, style: subtitleStyleFromSettings(config.settings.edit),
@@ -1508,10 +1370,6 @@ function drawManualWorkbench() {
         reviewMessage("请先保存样式草稿");
         return;
       }
-      if (action === "generate_metadata" && review.metadataUnsaved) {
-        reviewMessage("请先保存当前文案草稿，再生成新的建议");
-        return;
-      }
       const j = await mutateReview("/api/actions", {
         action,
         target: s.segment_id,
@@ -1529,14 +1387,17 @@ function drawManualWorkbench() {
     }
   };
   document.getElementById("review-finalize").onclick = () => submit("finalize");
-  document.getElementById("review-metadata-generate").onclick = () => submit("generate_metadata");
   document.getElementById("review-transcribe").onclick = () => {
     if (collectReviewLines(true).length &&
         !confirm("重新识别会替换当前字幕草稿，服务端已保存的字幕将保留到你点击保存。继续识别？")) return;
     submit("transcribe_subtitles");
   };
-  document.getElementById("review-approve").onclick = () =>
-    submit("approve_publish");
+  document.getElementById("review-approve").onclick = () => {
+    if (document.getElementById("review-approve").disabled) return;
+    captureRangeDraft();
+    capturePlayback();
+    location.hash = pageLink(s.publish_approval ? 'publish' : 'submission', {segment_id: s.segment_id});
+  };
   if (document.getElementById("review-rejudge"))
     document.getElementById("review-rejudge").onclick = () =>
       submit("retry_judge");
@@ -1579,7 +1440,7 @@ async function watchReviewJob(id) {
       updateReviewActions();
       reviewMessage(j.status === "done" ? "文案建议已生成。查看后可采用，原投稿资料保留。"
         : `文案生成失败：${j.result?.error || "请重试"}。原投稿资料保留。`);
-    } else if (review.unsaved || review.styleUnsaved || review.metadataUnsaved || review.rangeUnsaved) {
+    } else if (review.unsaved || review.styleUnsaved || review.rangeUnsaved) {
       review.segment.active_job = null;
       updateReviewActions();
       reviewMessage("后台任务已结束；当前编辑保留，请保存草稿后刷新查看结果。");

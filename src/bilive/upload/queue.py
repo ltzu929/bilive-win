@@ -50,9 +50,12 @@ class UploadQueue:
         description: str = "",
         tags: list[str] | None = None,
         *, tid: int | None = None, cover_path: str | None = None, topic: dict | None = None, season: dict | None = None,
+        dynamic: str = '',
     ) -> dict:
         """video_path 唯一暂存 staged。未确认 staged 不可领取。"""
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if not isinstance(dynamic, str) or len(dynamic) > 233:
+            raise ValueError('动态文案不能超过 233 个字符')
         from bilive.vendor.upload.publication_options import validate_selections
         validate_selections(topic, season)
         conn = self._conn()
@@ -60,8 +63,8 @@ class UploadQueue:
             cur = conn.execute(
                 """
                 INSERT INTO upload_queue
-                    (video_path, stage, title, description, tags, created_at, updated_at, tid, cover_path, topic, season)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (video_path, stage, title, description, tags, created_at, updated_at, tid, cover_path, topic, season, dynamic)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(video_path) DO UPDATE SET
                     title=excluded.title,
                     description=excluded.description,
@@ -70,6 +73,7 @@ class UploadQueue:
                     cover_path=COALESCE(excluded.cover_path,upload_queue.cover_path),
                     topic=excluded.topic,
                     season=excluded.season,
+                    dynamic=excluded.dynamic,
                     updated_at=excluded.updated_at
                 WHERE upload_queue.stage='staged' AND upload_queue.remote_filename IS NULL
                 """,
@@ -85,6 +89,7 @@ class UploadQueue:
                     cover_path,
                     json.dumps(topic, ensure_ascii=False) if topic else None,
                     json.dumps(season, ensure_ascii=False) if season else None,
+                    dynamic,
                 ),
             )
             if cur.rowcount == 0:

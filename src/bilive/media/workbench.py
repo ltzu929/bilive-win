@@ -177,7 +177,7 @@ class Workbench:
             return self.detail(sid)
 
     def save_metadata(self, sid: str, expected: int, title: str, description: str, tags: list[str], tid: int | None = None,
-                      publication_options: dict | None = None) -> dict:
+                      publication_options: dict | None = None, *, dynamic: str | None = None) -> dict:
         title = title.strip()
         tags = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
         if not title or len(title) > 80:
@@ -188,10 +188,13 @@ class Workbench:
             raise ValueError('TAG 最多 10 个，每个不超过 20 个字符，不能包含逗号或换行')
         from bilive.media.publication import validate_metadata
         validate_metadata(title, description, tags, tid)
+        if dynamic is not None and (not isinstance(dynamic, str) or len(dynamic) > 233):
+            raise ValueError('动态文案不能超过 233 个字符')
         with self.lock():
             s = self.load(sid)
             self.check_revision(s, expected)
             self.editable(s)
+            saved_dynamic = s.get('dynamic', '') if dynamic is None else dynamic
             options = {key: s.get(key) for key in ('topic', 'season')}
             if publication_options is not None:
                 options.update(publication_options)
@@ -206,11 +209,12 @@ class Workbench:
                     raise ActionConflict('final queue state is unknown')
                 try:
                     self.uploads.stage(s['final_path'], title, description, tags,
-                                       tid=tid if tid is not None else s.get('tid'), cover_path=s.get('cover_path'), **options)
+                                       tid=tid if tid is not None else s.get('tid'), cover_path=s.get('cover_path'),
+                                       dynamic=saved_dynamic, **options)
                 except ValueError as exc:
                     raise ActionConflict(str(exc)) from None
             saved = self.subtitles.load(sid)
-            s.update(title=title, description=description, tags=tags, revision=expected+1, **options)
+            s.update(title=title, description=description, tags=tags, dynamic=saved_dynamic, revision=expected+1, **options)
             if tid is not None:
                 s['tid'] = tid
             if s.get('preview', {}).get('revision') == expected:
@@ -419,7 +423,7 @@ class Workbench:
                     s['cover_path'] = str(generate_default_cover(Path(result.final_path)))
                     self.uploads.stage(result.final_path, title=s["title"], description=s.get('description', ''),
                                        tags=s.get('tags', []), tid=s.get('tid'), cover_path=s['cover_path'],
-                                       topic=s.get('topic'), season=s.get('season'))
+                                       topic=s.get('topic'), season=s.get('season'), dynamic=s.get('dynamic', ''))
             except Exception:
                 self.save(s)
                 raise

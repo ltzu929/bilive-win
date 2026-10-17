@@ -481,7 +481,8 @@ class AnalysisPipeline:
                 from bilive.media.publication import generate_default_cover
                 s['cover_path'] = str(generate_default_cover(Path(final.final_path)))
                 self.workbench.uploads.stage(final.final_path,s['title'],s['description'],s['tags'],
-                                           tid=s['tid'],cover_path=s['cover_path'],topic=s.get('topic'),season=s.get('season'))
+                                           tid=s['tid'],cover_path=s['cover_path'],topic=s.get('topic'),season=s.get('season'),
+                                           dynamic=s.get('dynamic', ''))
             s.update(state="awaiting_publish",final_path=final.final_path,final_revision=1,processing_stage='completed')
         except Exception as exc:
             from bilive.config.secrets import redact

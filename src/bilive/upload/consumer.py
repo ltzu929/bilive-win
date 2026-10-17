@@ -46,7 +46,8 @@ class UploadConsumer:
             return self._status({"status":"idle"})
         path = claimed["video_path"]
         metadata = {"copyright":1,"title":claimed["title"],"desc":claimed["description"],
-                    "tag":",".join(json.loads(claimed["tags"])),"tid":claimed.get('tid') or self.settings.tid}
+                    "tag":",".join(json.loads(claimed["tags"])),"tid":claimed.get('tid') or self.settings.tid,
+                    "dynamic":claimed.get('dynamic') or ''}
         if not metadata["title"].strip():
             self.queue.mark_failed(path, "upload title required")
             return self._status({"status":"failed","error":"upload title required"})

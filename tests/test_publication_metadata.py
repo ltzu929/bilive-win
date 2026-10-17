@@ -32,6 +32,7 @@ def test_metadata_updates_staged_queue_and_keeps_final_and_subtitles(env):
     payload = dict(expected_revision=s['revision'], title='新的标题', description='多行\n简介', tags=['TAG', 'TAG', ' 测试 '])
     response = c.post(f"/api/segments/{s['segment_id']}/metadata", json=payload)
     assert response.status_code == 200, response.text
+
     updated = response.json()
     assert updated['revision'] == s['revision']+1
     assert updated['title'] == '新的标题' and updated['tags'] == ['TAG', '测试']
@@ -84,3 +85,40 @@ def test_default_cover_and_preview_are_versioned_but_never_a_publish_gate(env):
     assert not s['preview_complete']
     response = c.post('/api/actions',json={'action':'approve_publish','target':s['segment_id'],'revision':s['revision']})
     assert response.status_code == 200, response.text
+
+
+def test_posting_draft_preserves_dynamic_through_save_reburn_and_approval(env):
+    c, worker, wb, queue = env
+    s = finalize(c, worker, subtitles(c, create(c)))
+    url = f"/api/segments/{s['segment_id']}/metadata"
+    payload = {'expected_revision':s['revision'], 'title':s['title'], 'dynamic':'这段对话太有意思了！'}
+    s = c.post(url, json=payload).json()
+    assert s['final_valid'] and not s['publish_approval']
+    assert queue.get_by_path(s['final_path'])['stage'] == 'staged'
+    assert queue.get_by_path(s['final_path'])['dynamic'] == payload['dynamic']
+    # Older clients omitting the new optional field must preserve its value.
+    s = c.post(url, json={'expected_revision':s['revision'], 'title':'更新标题'}).json()
+    assert s['dynamic'] == payload['dynamic']
+    s = finalize(c, worker, s)
+    assert queue.get_by_path(s['final_path'])['dynamic'] == payload['dynamic']
+    response = c.post('/api/actions', json={'action':'approve_publish','target':s['segment_id'],'revision':s['revision']})
+    assert response.status_code == 200
+    assert worker.run_once()
+    assert queue.get_by_path(s['final_path'])['stage'] == 'queued'
+    assert c.post(url, json={'expected_revision':s['revision'],'title':'禁止改写','dynamic':''}).status_code == 409
+    assert wb.load(s['segment_id'])['dynamic'] == payload['dynamic']
+
+
+def test_dynamic_validation_and_explicit_clear_preserve_saved_media(env):
+    c, worker, wb, queue = env
+    s = finalize(c, worker, subtitles(c, create(c)))
+    url = f"/api/segments/{s['segment_id']}/metadata"
+    invalid = c.post(url, json={'expected_revision':s['revision'],'title':s['title'],'dynamic':'字'*234})
+    assert invalid.status_code == 422
+    assert wb.load(s['segment_id'])['revision'] == s['revision']
+    for dynamic in ['已填写的动态', '']:
+        response = c.post(url, json={'expected_revision':s['revision'],'title':s['title'],'dynamic':dynamic})
+        assert response.status_code == 200, response.text
+        s = response.json()
+        assert s['final_valid'] and s['dynamic'] == dynamic
+        assert queue.get_by_path(s['final_path'])['dynamic'] == dynamic

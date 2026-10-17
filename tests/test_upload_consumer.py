@@ -56,6 +56,22 @@ def test_publication_retry_reuses_remote_and_manual_retry_rejected(setup):
         q.manual_retry(str(p))
 
 
+def test_posting_dynamic_survives_publication_retry(setup):
+    queue, path, client, counts, consumer = setup
+    queue.stage(str(path), title='动态测试', dynamic='当前切片的动态文案')
+    submitted = []
+    def submit(remote, metadata):
+        submitted.append(dict(metadata))
+        return {'code':-1} if len(submitted) == 1 else {'code':0,'data':{'bvid':'BVtest'}}
+    client.submit_uploaded_video = submit
+    queue.activate(str(path))
+    assert consumer.process_one()['status'] == 'uploaded'
+    assert consumer.process_one()['status'] == 'published'
+    assert counts['upload'] == 1
+    assert len(submitted) == 2
+    assert all(data['dynamic'] == '当前切片的动态文案' for data in submitted)
+
+
 def test_configured_category_reaches_upload_and_publication(setup):
     q,p,c,n,worker = setup
     worker.settings.tid = 19

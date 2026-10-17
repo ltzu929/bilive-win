@@ -65,15 +65,33 @@ async function renderPublish() {
     pageHead("发布队列", "批准后自动执行 · 异常优先处理") +
     emptyState("正在读取完整队列…");
   try {
-    const lists = await Promise.all(
+    let lists = await Promise.all(
       uploadGroups[publicationView.tab].map((stage) =>
         readAllPages(`/api/uploads?stage=${stage}`, current),
       ),
     );
     if (!current()) return;
+    const segmentId = pageParams().get('segment_id');
+    if (segmentId && !lists.flat().some(row => row.segment_id === segmentId)) {
+      const stages = [...new Set(Object.values(uploadGroups).flat())];
+      const otherLists = await Promise.all(stages.filter(stage => !uploadGroups[publicationView.tab].includes(stage)).map(stage => readAllPages(`/api/uploads?stage=${stage}`, current)));
+      if (!current()) return;
+      const selected = otherLists.flat().find(row => row.segment_id === segmentId);
+      if (selected) {
+        publicationView.tab = selected.stage === 'published' ? 'published' : selected.stage === 'cancelled' ? 'cancelled' : 'all';
+        lists = [...lists, ...otherLists].map(items => items.filter(row => uploadGroups[publicationView.tab].includes(row.stage)));
+      }
+    }
     publicationView.items = lists
       .flat()
       .sort((a, b) => (a.stage === "failed" ? 0 : a.stage === "staged" ? 2 : 1) - (b.stage === "failed" ? 0 : b.stage === "staged" ? 2 : 1) || Number(b.id) - Number(a.id));
+    if (segmentId) {
+      const selected = publicationView.items.find(row => row.segment_id === segmentId);
+      if (selected) {
+        publicationView.selected = selected.id;
+        publicationView.offset = Math.floor(publicationView.items.indexOf(selected) / 20) * 20;
+      }
+    }
     publicationView.offset = Math.min(
       publicationView.offset,
       Math.max(0, Math.ceil(publicationView.items.length / 20) - 1) * 20,
@@ -111,6 +129,7 @@ function drawPublish() {
     (b) =>
       (b.onclick = () => {
         view.tab = b.dataset.publishTab;
+        history.replaceState(null, '', '#/publish');
         view.offset = 0;
         renderPublish();
       }),
@@ -134,12 +153,14 @@ function publishDetail(r) {
         ...(r.segment_id ? { segment_id: r.segment_id } : {}),
       })
     : null;
+  const editLink = r.stage === 'staged' && !r.remote_filename && r.segment_id
+    ? `<a class="btn btn-primary btn-block" href="${pageLink('submission', {segment_id: r.segment_id})}">${icon('file-text')}编辑投稿</a>` : '';
   return `<div class="detail-preview" ${r.segment_id ? `data-media-url="${htmlEscape(apiURL("/api/media/final/" + encodeURIComponent(r.segment_id)))}"` : ""}>${mediaPlaceholder("当前成片预览不可用")}</div><h2>${htmlEscape(r.title || fileName(r.video_path))}</h2><p class="muted">${htmlEscape(beijingTime(r.created_at))}</p><p>${statusBadge(uploadLabels[r.stage] || r.stage, uploadTone(r))}</p>
     <section class="detail-section"><h3>${icon("player-play")}来源录制</h3>${link ? `<a href="${link}">查看录制源文件</a>` : '<p class="muted">暂无来源关联</p>'}</section>
     <section class="detail-section"><h3>${icon("file-text")}投稿结果</h3>${r.stage === "published" && r.bvid ? `<a class="text-green" target="_blank" rel="noopener" href="https://www.bilibili.com/video/${encodeURIComponent(r.bvid)}">${htmlEscape(r.bvid)} · 查看结果</a>` : `<p class="text-orange">${r.stage === "failed" ? "投稿失败 / 结果需核对" : "尚未确认"}</p>`}${r.last_error ? notice(htmlEscape(uploadErrorText(r)), "warning") : ""}<p class="muted">已尝试 ${Number(r.attempts) || 0} 次${r.next_attempt_at ? ` · 下次尝试 ${beijingTime(r.next_attempt_at)}` : r.stage === "failed" ? " · 自动重试已停止" : ""}</p></section>
     <section class="detail-section"><h3>${icon("cloud-upload")}媒体上传</h3><p class="${r.remote_filename ? "text-green" : "muted"}">${r.remote_filename ? "已完成，上传结果已保留" : "尚未完成"}</p></section>
-    <details class="publish-metadata"><summary>投稿资料 · 标题 / 简介 / TAG</summary><p><strong>${htmlEscape(r.title)}</strong></p><p class="publish-description">${htmlEscape(r.description || "暂无简介")}</p><p>${htmlEscape(uploadTags(r).join(" · ") || "暂无 TAG")}</p></details>
-    <p class="hint">${icon("info-circle")}${r.remote_filename && r.stage !== "published" ? "请先到 B 站创作中心核对是否已生成稿件，避免重复投稿。视频无需重新上传。" : "成片须经人工允许发布后才进入上传流程。"}</p><div class="detail-actions">${r.remote_filename && r.stage !== "published" ? '<a class="btn btn-primary btn-block" href="https://member.bilibili.com/platform/upload-manager/article" target="_blank" rel="noopener">核对 B 站投稿结果</a>' : ""}<button id="upload-retry" class="btn btn-muted btn-block" ${r.stage === "failed" && !r.remote_filename ? "" : "disabled"}>${icon("refresh")}${r.remote_filename ? "核对投稿结果后处理" : "重试上传"}</button>${link ? `<a class="btn btn-outline btn-block" href="${link}">${icon("arrow-left")}返回片段</a>` : ""}</div><p id="publish-message" role="status"></p>`;
+    <details class="publish-metadata"><summary>投稿资料 · 标题 / 简介 / TAG</summary><p><strong>${htmlEscape(r.title)}</strong></p><p class="publish-description">${htmlEscape(r.description || "暂无简介")}</p><p>${htmlEscape(uploadTags(r).join(" · ") || "暂无 TAG")}</p>${r.dynamic ? `<p>粉丝动态：${htmlEscape(r.dynamic)}</p>` : ""}</details>
+    <p class="hint">${icon("info-circle")}${r.remote_filename && r.stage !== "published" ? "请先到 B 站创作中心核对是否已生成稿件，避免重复投稿。视频无需重新上传。" : "成片须经人工允许发布后才进入上传流程。"}</p><div class="detail-actions">${editLink}${r.remote_filename && r.stage !== "published" ? '<a class="btn btn-primary btn-block" href="https://member.bilibili.com/platform/upload-manager/article" target="_blank" rel="noopener">核对 B 站投稿结果</a>' : ""}<button id="upload-retry" class="btn btn-muted btn-block" ${r.stage === "failed" && !r.remote_filename ? "" : "disabled"}>${icon("refresh")}${r.remote_filename ? "核对投稿结果后处理" : "重试上传"}</button>${link ? `<a class="btn btn-outline btn-block" href="${link}">${icon("arrow-left")}返回片段</a>` : ""}</div><p id="publish-message" role="status"></p>`;
 }
 function uploadTags(row) {
   try { const tags = Array.isArray(row.tags) ? row.tags : JSON.parse(row.tags || "[]"); return Array.isArray(tags) ? tags : []; } catch { return []; }

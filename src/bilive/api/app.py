@@ -231,6 +231,7 @@ class MetadataRequest(BaseModel):
     tid: int | None = Field(default=None, ge=1, le=10000)
     topic: dict | None = None
     season: dict | None = None
+    dynamic: str | None = Field(default=None, max_length=233)
 
 
 def publication_client():
@@ -271,7 +272,8 @@ def save_segment_metadata(segment_id: str, request: MetadataRequest):
         if any(options.values()):
             options = publication_client().publication_options.validate_options(**options)
     return workbench.save_metadata(segment_id, request.expected_revision,
-                                   request.title, request.description, request.tags, request.tid, options)
+                                   request.title, request.description, request.tags, request.tid, options,
+                                   dynamic=request.dynamic)
 
 
 class PreviewRequest(BaseModel):

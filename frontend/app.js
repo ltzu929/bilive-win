@@ -2,6 +2,7 @@ const PAGES = {
   library: renderManualWorkbench,
   live: renderNativeRooms,
   publish: renderPublish,
+  submission: renderSubmission,
   streamer: renderStreamerProfiles,
   recycle: renderSourceRecycle,
   settings: renderRuntimeSettings,
@@ -10,6 +11,7 @@ function route() {
   clearTimeout(reviewTimer);
   clearTimeout(analysisTimer);
   clearTimeout(roomTimer);
+  clearTimeout(submissionTimer);
   if (!location.hash) {
     location.hash = "#/library";
     return;
@@ -28,8 +30,9 @@ function route() {
     return;
   }
   document.querySelectorAll(".nav-item").forEach((a) => {
-    a.classList.toggle("active", a.dataset.page === page);
-    if (a.dataset.page === page) a.setAttribute("aria-current", "page");
+    const selected = a.dataset.page === (page === 'submission' ? 'publish' : page);
+    a.classList.toggle("active", selected);
+    if (selected) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   });
   const main = document.getElementById("main");
