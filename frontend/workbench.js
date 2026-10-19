@@ -470,8 +470,10 @@ function updateReviewActions() {
     transcribe.className = `btn btn-sm ${!subtitleReady && !document.querySelector("#review-lines tr") ? "btn-primary" : "btn-secondary"}`;
   }
   document.querySelectorAll(
-    '#review-lines input, #review-lines textarea, #review-lines [data-delete-line], #review-style, #review-style-save, #review-style-default, #review-drop, #review-drop-open, #review-rejudge, #review-range, #review-add-line',
+    '#review-lines input, #review-lines textarea, #review-lines [data-delete-line], #review-style, #review-style-preset, #review-style-apply, #review-style-save, #review-style-default, #review-drop, #review-drop-open, #review-rejudge, #review-range, #review-add-line',
   ).forEach((element) => { element.disabled = !!locked; });
+  const applyStyle = document.getElementById('review-style-apply');
+  if (applyStyle) applyStyle.disabled = !!(locked || !review.styleUnsaved);
   const badge = document.getElementById("review-draft-badge");
   if (badge) {
     badge.textContent = s.state === "dropped" ? "已废弃" : dirty ? "草稿未保存" : subtitleReady ? "已保存" : "字幕待补充 / 确认";
@@ -729,7 +731,10 @@ function arrangeReviewWorkbench() {
   editor.querySelector(".section-heading > .hint")?.remove();
   const details = content.querySelectorAll("details");
   const style = [...details].find(node => node.querySelector("#review-style"));
-  if (style) document.getElementById("subtitle-panel").append(style);
+  if (style) {
+    document.getElementById("subtitle-panel").append(style);
+    style.insertAdjacentHTML('beforebegin', `<div class="subtitle-preset-picker" id="review-preset-picker">${subtitlePresetSelectHTML('review-style-preset', review.segment?.subtitle_style)}${subtitlePresetSampleHTML()}<button id="review-style-apply" class="btn btn-secondary">保存所选样式</button><p class="hint">保存样式后重新生成成片。</p></div>`);
+  }
   if (review.segment) {
     setMessage("review-save-hint", "");
     setMessage("candidate-progress", "");
@@ -1194,7 +1199,24 @@ function drawManualWorkbench() {
       );
     }
   } catch {}
+  const presetSelect = document.getElementById('review-style-preset');
+  const refreshStylePreview = () => {
+    try {
+      const style = JSON.parse(styleEditor.value);
+      presetSelect.value = subtitlePresetId(style);
+      updateSubtitlePresetSample(document.getElementById('review-preset-picker'), style);
+    } catch { presetSelect.value = ''; }
+  };
+  presetSelect.onchange = () => {
+    if (!presetSelect.value) return;
+    try {
+      styleEditor.value = JSON.stringify(applySubtitlePreset(JSON.parse(styleEditor.value), presetSelect.value), null, 2);
+      styleEditor.oninput();
+    } catch { reviewMessage('当前样式 JSON 无效，请先修正后选择预设。'); }
+  };
+  refreshStylePreview();
   styleEditor.oninput = () => {
+    refreshStylePreview();
     review.styleUnsaved = true;
     updateReviewActions();
     try {
@@ -1223,6 +1245,7 @@ function drawManualWorkbench() {
       reviewMessage(`样式保存失败：${e.message}。草稿保留。`);
     }
   };
+  document.getElementById('review-style-apply').onclick = () => document.getElementById('review-style-save').click();
   document.querySelectorAll("[data-rejudge-range]").forEach(
     (b) =>
       (b.onclick = () => {
@@ -1519,6 +1542,7 @@ async function loadStreamerProfile() {
         .join("")}
       <p><label for="profile-default-season">默认加入合集</label><select id="profile-default-season" style="width:100%"><option value="">不自动加入合集</option>${p.default_season ? `<option value="${htmlEscape(JSON.stringify(p.default_season))}" selected>${htmlEscape(p.default_season.title || `合集 ${p.default_season.id}`)} / ${htmlEscape(p.default_season.section_title || `小节 ${p.default_season.section_id}`)}</option>` : ''}</select></p>
       <button id="profile-season-load" type="button" class="btn btn-secondary btn-sm">读取我的合集</button><p id="profile-season-message" role="status" class="hint">用于该主播新建的手动切片和自动切片；单条切片可修改或清空。已有片段保留原选择，投稿前再次验证合集。</p>
+      <div class="subtitle-preset-picker">${subtitlePresetSelectHTML('profile-subtitle-preset', p.default_subtitle_style, {inherit: true})}<p class="hint">保存档案后，该主播以后的手动切片和自动切片默认使用所选样式。已有片段保留原样式；单条切片仍可单独修改。</p><div id="profile-subtitle-preview">${subtitlePresetSampleHTML()}</div></div>
       <p><label for="profile-subtitle-hotwords">字幕专名（每行一个）</label><textarea id="profile-subtitle-hotwords" style="width:100%;min-height:120px" data-profile="subtitle_hotwords" aria-describedby="subtitle-hotwords-help" placeholder="常见联动主播名&#10;角色名&#10;游戏名">${htmlEscape((p.subtitle_hotwords || []).join("\n"))}</textarea></p>
       <p id="subtitle-hotwords-help" class="hint">填写正确名称，自动切片和手动识别字幕共用；自动包含上方的主播显示名和别名。常用专名放在前面，避免填写大段说明。修改后用于下一次识别，已有字幕需重新识别。</p>
       ${[
@@ -1544,6 +1568,43 @@ async function loadStreamerProfile() {
       ${data.recommendations.map((r) => `<article><p>${htmlEscape(r.changes?.approved_guidance)}</p><p>状态 ${htmlEscape(r.status)} · 样本 ${r.sample_size}</p><details><summary>查看证据 ID</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(r.evidence_ids, null, 2))}</pre></details><button class="btn btn-secondary" data-apply="${htmlEscape(r.recommendation_id)}" ${r.status === "applied" ? "disabled" : ""}>人工应用建议</button></article>`).join("") || "<p>暂无建议。</p>"}
       <h2>审核经验（共 ${experience.total} 条）</h2>${experience.items.map((e) => `<article><p>${htmlEscape(e.experience_type)} · ${htmlEscape(e.source_rel_path)}</p><p>${htmlEscape(e.note)}</p><details><summary>查看源区间和内容证据</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(e, null, 2))}</pre></details></article>`).join("") || "<p>暂无已保存的人工审核经验。</p>"}<div class="action-row"><button id="experience-prev" class="btn btn-secondary" ${streamerView.offset === 0 ? "disabled" : ""}>上一页</button><button id="experience-next" class="btn btn-secondary" ${streamerView.offset + 20 >= experience.total ? "disabled" : ""}>下一页</button></div></div></div>`;
     const profileForm = document.getElementById("profile-form");
+    const styleSelect = document.getElementById('profile-subtitle-preset');
+    const styleJSON = profileForm.querySelector('[data-profile="default_subtitle_style"]');
+    const stylePreview = document.getElementById('profile-subtitle-preview');
+    let profileStyle = p.default_subtitle_style || {};
+    const syncProfileStyle = () => {
+      const preset = subtitlePresetId(profileStyle);
+      styleSelect.value = Object.keys(profileStyle).length ? preset : 'inherit';
+      stylePreview.hidden = !preset;
+      if (preset) updateSubtitlePresetSample(stylePreview, profileStyle);
+    };
+    const readProfileStyle = () => {
+      try {
+        const style = JSON.parse(styleJSON.value);
+        if (!style || typeof style !== 'object' || Array.isArray(style)) throw new Error();
+        profileStyle = style;
+        styleJSON.setCustomValidity('');
+        return true;
+      } catch {
+        styleJSON.setCustomValidity('字幕样式需填写 JSON 对象；使用 {} 跟随全局默认。');
+        return false;
+      }
+    };
+    styleSelect.onchange = () => {
+      const selected = styleSelect.value;
+      if (selected !== 'inherit' && !readProfileStyle()) {
+        styleJSON.closest('details').open = true;
+        styleJSON.reportValidity();
+        syncProfileStyle();
+        return;
+      }
+      profileStyle = selected === 'inherit' ? {} : applySubtitlePreset(profileStyle, selected);
+      styleJSON.value = JSON.stringify(profileStyle, null, 2);
+      styleJSON.setCustomValidity('');
+      syncProfileStyle();
+    };
+    styleJSON.oninput = () => { if (readProfileStyle()) syncProfileStyle(); };
+    syncProfileStyle();
     document.getElementById('profile-season-load').onclick = async (event) => {
       const button = event.currentTarget;
       const select = document.getElementById('profile-default-season');

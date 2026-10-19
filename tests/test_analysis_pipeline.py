@@ -428,7 +428,11 @@ def test_room_profile_reaches_judge_metadata_and_burned_style(setup):
     assert json.loads(paths['meta'].read_text(encoding='utf-8'))['subtitle_style']['font_size'] == 32
 
 
-@pytest.mark.parametrize('override', [{}, {'outline': 3}])
+@pytest.mark.parametrize('override', [{}, {'outline': 3}] + [
+    dict(font_name='Douyin Sans', font_size=48, bold=True, spacing=5.76,
+         primary_colour=colour, outline_colour='&H00FFFFFF', outline=2,
+         shadow_colour=shadow, shadow=3, shadow_outline=10)
+    for colour, shadow in [('&H005959D9', '&H00ADADEE'), ('&H00D99859', '&H00EECBAD')]])
 def test_analysis_inherits_global_style_after_profile_style_save(setup, override):
     import json
     from bilive.vendor import streamer_profiles as profiles
@@ -449,7 +453,7 @@ def test_analysis_inherits_global_style_after_profile_style_save(setup, override
     assert segment['subtitle_style'] == {**global_style, **override}
     assert segment['final_valid'] and q.get_by_path(segment['final_path'])['stage'] == 'staged'
     paths = fin.artifact_paths(segment['segment_id'])
-    assert 'Style: Default,Microsoft YaHei,80,' in paths['ass'].read_text(encoding='utf-8')
+    assert f"Style: Default,{override.get('font_name', 'Microsoft YaHei')},{override.get('font_size', 80)}," in paths['ass'].read_text(encoding='utf-8')
     assert json.loads(paths['meta'].read_text(encoding='utf-8'))['subtitle_style'] == segment['subtitle_style']
 
 

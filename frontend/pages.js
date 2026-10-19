@@ -739,7 +739,9 @@ function configSection(title, data) {
 function subtitleStyleFromSettings(edit) {
   return {font_name: edit?.font_family || "Noto Sans SC", font_size: edit?.font_size ?? 20,
     margin_v: edit?.margin_v ?? 60, alignment: edit?.alignment ?? 2, outline: edit?.outline ?? 1,
-    primary_colour: edit?.primary_colour || "&H00FFFFFF", outline_colour: edit?.outline_colour || "&H00000000"};
+    primary_colour: edit?.primary_colour || "&H00FFFFFF", outline_colour: edit?.outline_colour || "&H00000000",
+    bold: edit?.bold ?? false, spacing: edit?.spacing ?? 0, shadow: edit?.shadow ?? 0,
+    shadow_outline: edit?.shadow_outline ?? 0, shadow_colour: edit?.shadow_colour || "&H64000000"};
 }
 function assColorHex(value) {
   const match = /^&H([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value || "");
@@ -750,7 +752,7 @@ function colorHexAss(hex, alpha = "00") {
 }
 function subtitleStyleSettingsHTML(edit) {
   const style = settingsView.subtitleDraft || subtitleStyleFromSettings(edit);
-  return `<section class="card card-pad subtitle-settings"><div class="section-heading"><h2>字幕外观</h2><button class="btn btn-secondary btn-sm" id="subtitle-preset">使用清晰预设</button></div><p class="muted">按 1920 × 1080 画面设置。清晰预设：字号 48、底部距离 110、描边 2。</p><div class="subtitle-settings-layout"><form id="subtitle-settings-form"><div class="subtitle-settings-fields"><label class="field">字体<input id="subtitle-font" required maxlength="100" list="subtitle-font-list" value="${htmlEscape(style.font_name)}"><datalist id="subtitle-font-list"><option value="Noto Sans SC"><option value="Microsoft YaHei"><option value="SimHei"></datalist></label><label class="field">字号（像素）<input id="subtitle-font-size" type="number" min="8" max="120" step="1" required value="${style.font_size}"></label><label class="field">上下边距（像素）<input id="subtitle-margin" type="number" min="0" max="1080" step="1" required value="${style.margin_v}"></label><label class="field">位置<select id="subtitle-alignment">${[[1,"左下"],[2,"底部居中"],[3,"右下"],[4,"左侧居中"],[5,"画面居中"],[6,"右侧居中"],[7,"左上"],[8,"顶部居中"],[9,"右上"]].map(([value,label]) => `<option value="${value}" ${value === style.alignment ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="field">描边宽度（像素）<input id="subtitle-outline" type="number" min="0" max="10" step="0.5" required value="${style.outline}"></label><label class="field">文字颜色<input id="subtitle-color" type="color" value="${assColorHex(style.primary_colour)}"></label><label class="field">描边颜色<input id="subtitle-outline-color" type="color" value="${assColorHex(style.outline_colour)}"></label></div><div class="action-row"><button class="btn btn-primary" id="subtitle-settings-save" type="submit">保存字幕设置</button><button class="btn btn-secondary" id="subtitle-settings-reset" type="button">恢复已保存设置</button></div><p id="subtitle-settings-message" role="status" class="muted">${settingsView.subtitleDraft ? "有未保存的字幕设置" : "当前已保存设置"}</p></form><div class="subtitle-preview-panel"><canvas id="subtitle-style-preview" width="1920" height="1080" aria-label="字幕外观预览"></canvas><p class="hint">缩放预览 · 实际效果以生成的成片为准</p><p class="hint">底部字幕适当上移，可以避免播放控制条遮挡。</p></div></div><p class="subtitle-settings-scope">保存后用于新建片段和新分析片段，主播档案中的单独样式优先。已有片段可在录播库应用默认样式，再重新生成成片。</p></section>`;
+  return `<section class="card card-pad subtitle-settings"><div class="section-heading"><h2>字幕外观</h2><button class="btn btn-secondary btn-sm" id="subtitle-preset">使用清晰预设</button></div><p class="muted">按 1920 × 1080 画面设置。清晰预设：字号 48、底部距离 110、描边 2。</p><div class="subtitle-settings-layout"><form id="subtitle-settings-form"><div class="subtitle-settings-fields">${subtitlePresetSelectHTML("subtitle-style-preset", style)}<label class="field">字体<input id="subtitle-font" required maxlength="100" list="subtitle-font-list" value="${htmlEscape(style.font_name)}"><datalist id="subtitle-font-list"><option value="Douyin Sans"><option value="Noto Sans SC"><option value="Microsoft YaHei"><option value="SimHei"></datalist></label><label class="field">字号（像素）<input id="subtitle-font-size" type="number" min="8" max="120" step="1" required value="${style.font_size}"></label><label class="field">上下边距（像素）<input id="subtitle-margin" type="number" min="0" max="1080" step="1" required value="${style.margin_v}"></label><label class="field">位置<select id="subtitle-alignment">${[[1,"左下"],[2,"底部居中"],[3,"右下"],[4,"左侧居中"],[5,"画面居中"],[6,"右侧居中"],[7,"左上"],[8,"顶部居中"],[9,"右上"]].map(([value,label]) => `<option value="${value}" ${value === style.alignment ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="field">描边宽度（像素）<input id="subtitle-outline" type="number" min="0" max="10" step="0.5" required value="${style.outline}"></label><label class="field">文字颜色<input id="subtitle-color" type="color" value="${assColorHex(style.primary_colour)}"></label><label class="field">描边颜色<input id="subtitle-outline-color" type="color" value="${assColorHex(style.outline_colour)}"></label><label class="field">字重<select id="subtitle-bold"><option value="false" ${!style.bold ? 'selected' : ''}>常规</option><option value="true" ${style.bold ? 'selected' : ''}>粗体</option></select></label><label class="field">字距（像素）<input id="subtitle-spacing" type="number" min="0" max="30" step="0.01" value="${style.spacing ?? 0}"></label><label class="field">阴影距离（像素）<input id="subtitle-shadow" type="number" min="0" max="30" step="0.1" value="${style.shadow ?? 0}"></label><label class="field">阴影扩展（像素）<input id="subtitle-shadow-outline" type="number" min="0" max="30" step="0.5" value="${style.shadow_outline ?? 0}"></label><label class="field">阴影颜色<input id="subtitle-shadow-color" type="color" value="${assColorHex(style.shadow_colour || '&H64000000')}"></label></div><div class="action-row"><button class="btn btn-primary" id="subtitle-settings-save" type="submit">保存字幕设置</button><button class="btn btn-secondary" id="subtitle-settings-reset" type="button">恢复已保存设置</button></div><p id="subtitle-settings-message" role="status" class="muted">${settingsView.subtitleDraft ? "有未保存的字幕设置" : "当前已保存设置"}</p></form><div class="subtitle-preview-panel"><canvas id="subtitle-style-preview" width="1920" height="1080" aria-label="字幕外观预览"></canvas><p class="hint">缩放预览 · PR 样式近似转换，实际效果以生成的成片为准</p><p class="hint">底部字幕适当上移，可以避免播放控制条遮挡。</p></div></div><p class="subtitle-settings-scope">保存后用于新建片段和新分析片段，主播档案中的单独样式优先。已有片段可在录播库应用默认样式，再重新生成成片。</p></section>`;
 }
 function bindSubtitleSettings() {
   const form = document.getElementById("subtitle-settings-form");
@@ -764,7 +766,12 @@ function bindSubtitleSettings() {
       alignment: Number(document.getElementById("subtitle-alignment").value),
       outline: Number(document.getElementById("subtitle-outline").value),
       primary_colour: colorHexAss(document.getElementById("subtitle-color").value, prior.primary_colour.slice(2,4)),
-      outline_colour: colorHexAss(document.getElementById("subtitle-outline-color").value, prior.outline_colour.slice(2,4))};
+      outline_colour: colorHexAss(document.getElementById("subtitle-outline-color").value, prior.outline_colour.slice(2,4)),
+      bold: document.getElementById("subtitle-bold").value === 'true',
+      spacing: Number(document.getElementById("subtitle-spacing").value),
+      shadow: Number(document.getElementById("subtitle-shadow").value),
+      shadow_outline: Number(document.getElementById("subtitle-shadow-outline").value),
+      shadow_colour: colorHexAss(document.getElementById("subtitle-shadow-color").value, (prior.shadow_colour || '&H64000000').slice(2,4))};
   }
   function preview(style) {
     const canvas = document.getElementById("subtitle-style-preview"), ctx = canvas.getContext("2d");
@@ -777,22 +784,39 @@ function bindSubtitleSettings() {
     const column = (style.alignment-1)%3, row = Math.floor((style.alignment-1)/3);
     ctx.textAlign = ["left","center","right"][column];
     ctx.textBaseline = row === 0 ? "bottom" : row === 2 ? "top" : "middle";
-    ctx.font = `${Math.max(8,Math.min(120,style.font_size))}px ${JSON.stringify(style.font_name)}, sans-serif`;
+    ctx.font = `${style.bold ? "bold " : ""}${Math.max(8,Math.min(120,style.font_size))}px ${JSON.stringify(style.font_name)}, sans-serif`;
     ctx.lineJoin = "round"; ctx.lineWidth = Math.max(0,Math.min(10,style.outline))*2;
     ctx.strokeStyle = assColorHex(style.outline_colour); ctx.fillStyle = assColorHex(style.primary_colour);
     ctx.globalAlpha = 1-parseInt(style.primary_colour.slice(2,4),16)/255;
     const x = [20,960,1900][column], y = row === 0 ? 1080-style.margin_v : row === 2 ? style.margin_v : 540;
     const text = "雪狐的C盘现在还剩下216";
+    ctx.letterSpacing = `${style.spacing || 0}px`;
+    if (style.shadow || style.shadow_outline) {
+      ctx.save();
+      ctx.globalAlpha = 1 - parseInt((style.shadow_colour || '&H64000000').slice(2,4),16)/255;
+      ctx.fillStyle = ctx.strokeStyle = assColorHex(style.shadow_colour || '&H64000000');
+      ctx.lineWidth = (style.shadow_outline || style.outline || 0) * 2;
+      const offset = (style.shadow || 0) / Math.sqrt(2);
+      if (ctx.lineWidth) ctx.strokeText(text,x+offset,y+offset);
+      ctx.fillText(text,x+offset,y+offset); ctx.restore();
+    }
     if (style.outline > 0) ctx.strokeText(text,x,y); ctx.fillText(text,x,y); ctx.globalAlpha = 1;
   }
-  form.oninput = () => {
+  form.oninput = event => {
+    if (event.target.id === "subtitle-style-preset") return;
     const style = readStyle();
+    document.getElementById("subtitle-style-preset").value = subtitlePresetId(style);
     settingsView.subtitleDraft = JSON.stringify(style) === JSON.stringify(original) ? null : style; preview(style);
     updateSettingsSaveBar();
     setMessage("subtitle-settings-message", "字幕设置未保存");
   };
+  document.getElementById('subtitle-style-preset').onchange = event => {
+    if (!event.target.value) return;
+    settingsView.subtitleDraft = applySubtitlePreset(readStyle(), event.target.value);
+    drawSettings();
+  };
   document.getElementById("subtitle-preset").onclick = () => {
-    settingsView.subtitleDraft = {...readStyle(), font_size:48, margin_v:110, alignment:2, outline:2, primary_colour:"&H00FFFFFF", outline_colour:"&H00000000"};
+    settingsView.subtitleDraft = {...readStyle(), font_size:48, margin_v:110, alignment:2, outline:2, primary_colour:"&H00FFFFFF", outline_colour:"&H00000000", bold:false, spacing:0, shadow:0, shadow_outline:0, shadow_colour:"&H64000000"};
     drawSettings();
   };
   document.getElementById("subtitle-settings-reset").onclick = () => { settingsView.subtitleDraft = null; drawSettings(); };

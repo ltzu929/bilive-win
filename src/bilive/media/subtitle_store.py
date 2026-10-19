@@ -62,7 +62,17 @@ class SubtitleStore:
         from bilive.vendor.subtitle_style import SubtitleStyle, validate_style
         validate_style(appearance or {})
         a = SubtitleStyle.from_mapping(appearance)
-        style = f"Style: Default,{a.font_name},{a.font_size},{a.primary_colour or '&H00FFFFFF'},&H000000FF,{a.outline_colour or '&H00000000'},&H64000000,0,0,0,0,100,100,0,0,1,{a.outline if a.outline is not None else 1},0,{a.alignment or 2},10,10,{a.margin_v},1"
+        from bilive.vendor.subtitle_style import _format_style_number as number
+        expanded_shadow = a.shadow_outline is not None and a.shadow_outline > 0
+        offset = (a.shadow or 0) / 2 ** .5
+
+        def style_line(name, fill, outline_colour, outline, shadow):
+            return f"Style: {name},{a.font_name},{a.font_size},{fill},&H000000FF,{outline_colour},{a.shadow_colour or '&H64000000'},{-1 if a.bold else 0},0,0,0,100,100,{number(a.spacing or 0)},0,1,{outline},{number(shadow)},{a.alignment or 2},10,10,{a.margin_v},1"
+
+        style = style_line('Default', a.primary_colour or '&H00FFFFFF',
+                           a.outline_colour or '&H00000000',
+                           a.outline if a.outline is not None else 1,
+                           0 if expanded_shadow else offset)
         lines = [
             "[Script Info]",
             "ScriptType: v4.00+",
@@ -72,6 +82,9 @@ class SubtitleStore:
             "[V4+ Styles]",
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
             style,
+            *([style_line('Shadow', a.shadow_colour or '&H64000000',
+                          a.shadow_colour or '&H64000000', a.shadow_outline, 0)]
+              if expanded_shadow else []),
             "",
             "[Events]",
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -87,8 +100,18 @@ class SubtitleStore:
 
         for ln in data["lines"]:
             text = ln["text"].replace("\n", "\\N")
+            position = ''
+            if expanded_shadow:
+                alignment = a.alignment or 2
+                x = [10, 960, 1910][(alignment - 1) % 3]
+                y = [1080 - a.margin_v, 540, a.margin_v][(alignment - 1) // 3]
+                shadow_position = f"{{\\pos({number(x + offset)},{number(y + offset)})}}"
+                position = f"{{\\pos({x},{y})}}"
+                lines.append(
+                    f"Dialogue: 0,{ts(ln['start'])},{ts(ln['end'])},Shadow,,0,0,0,,{shadow_position}{text}"
+                )
             lines.append(
-                f"Dialogue: 0,{ts(ln['start'])},{ts(ln['end'])},Default,,0,0,0,,{text}"
+                f"Dialogue: {1 if expanded_shadow else 0},{ts(ln['start'])},{ts(ln['end'])},Default,,0,0,0,,{position}{text}"
             )
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text("\n".join(lines), encoding="utf-8")

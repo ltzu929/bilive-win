@@ -92,6 +92,11 @@ class EditStyleConfig:
     outline: float | None = None
     primary_colour: str | None = None
     outline_colour: str | None = None
+    bold: bool | None = None
+    spacing: float | None = None
+    shadow: float | None = None
+    shadow_colour: str | None = None
+    shadow_outline: float | None = None
 
 
 @dataclass

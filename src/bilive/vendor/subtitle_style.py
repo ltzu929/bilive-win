@@ -3,21 +3,25 @@ from dataclasses import dataclass
 
 def validate_style(value):
     import math, re
-    allowed = {'font_name','font_size','margin_v','alignment','outline','primary_colour','outline_colour'}
+    allowed = {'font_name','font_size','margin_v','alignment','outline','primary_colour','outline_colour',
+               'bold','spacing','shadow','shadow_colour','shadow_outline'}
     if set(value) - allowed:
         raise ValueError('unknown subtitle style field')
     font = value.get('font_name', 'Noto Sans SC')
     if not isinstance(font, str) or not font.strip() or len(font) > 100 or any(c in font for c in ',\r\n\\{}'):
         raise ValueError('invalid subtitle font name')
-    for key, low, high in [('font_size',8,120),('margin_v',0,1080),('alignment',1,9),('outline',0,10)]:
+    if 'bold' in value and type(value['bold']) is not bool:
+        raise ValueError('invalid subtitle bold flag')
+    for key, low, high in [('font_size',8,120),('margin_v',0,1080),('alignment',1,9),('outline',0,10),
+                           ('spacing',0,30),('shadow',0,30),('shadow_outline',0,30)]:
         if key in value:
             try:
                 number = float(value[key])
             except (TypeError, ValueError):
                 raise ValueError('invalid subtitle style number') from None
-            if not math.isfinite(number) or not low <= number <= high or (key != 'outline' and number != int(number)):
+            if not math.isfinite(number) or not low <= number <= high or (key in {'font_size','margin_v','alignment'} and number != int(number)):
                 raise ValueError('invalid subtitle style number')
-    for key in ('primary_colour','outline_colour'):
+    for key in ('primary_colour','outline_colour','shadow_colour'):
         if key in value and not re.fullmatch(r'&H[0-9A-Fa-f]{8}', str(value[key])):
             raise ValueError('invalid ASS colour')
 
@@ -43,6 +47,11 @@ class SubtitleStyle:
     outline: float | None = None      # outline (描边) width
     primary_colour: str | None = None  # ASS &HAABBGGRR
     outline_colour: str | None = None  # ASS &HAABBGGRR
+    bold: bool | None = None
+    spacing: float | None = None
+    shadow: float | None = None       # diagonal shadow distance in pixels
+    shadow_colour: str | None = None
+    shadow_outline: float | None = None  # expanded shadow, rendered on its own layer
 
     def to_force_style(self) -> str:
         parts = [
@@ -58,6 +67,14 @@ class SubtitleStyle:
             parts.append(f"PrimaryColour={self.primary_colour}")
         if self.outline_colour:
             parts.append(f"OutlineColour={self.outline_colour}")
+        if self.bold is not None:
+            parts.append(f"Bold={-1 if self.bold else 0}")
+        if self.spacing is not None:
+            parts.append(f"Spacing={_format_style_number(self.spacing)}")
+        if self.shadow is not None:
+            parts.append(f"Shadow={_format_style_number(self.shadow / 2 ** .5)}")
+        if self.shadow_colour:
+            parts.append(f"BackColour={self.shadow_colour}")
         return ",".join(parts)
 
     @classmethod
@@ -101,6 +118,11 @@ class SubtitleStyle:
             outline=_opt_float("outline"),
             primary_colour=_opt_str("primary_colour"),
             outline_colour=_opt_str("outline_colour"),
+            bold=data.get("bold") if type(data.get("bold")) is bool else None,
+            spacing=_opt_float("spacing"),
+            shadow=_opt_float("shadow"),
+            shadow_colour=_opt_str("shadow_colour"),
+            shadow_outline=_opt_float("shadow_outline"),
         )
 
     def to_mapping(self) -> dict:
@@ -118,4 +140,7 @@ class SubtitleStyle:
             data["primary_colour"] = self.primary_colour
         if self.outline_colour:
             data["outline_colour"] = self.outline_colour
+        for key in ('bold', 'spacing', 'shadow', 'shadow_colour', 'shadow_outline'):
+            if getattr(self, key) is not None:
+                data[key] = getattr(self, key)
         return data

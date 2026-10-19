@@ -628,7 +628,8 @@ def save_workbench_settings(request: SettingsChangesRequest):
     if request.style is not None:
         validate_style(request.style)
         style = SubtitleStyle.from_mapping(request.style).to_mapping()
-        changes['edit'] = dict.fromkeys(('alignment', 'outline', 'primary_colour', 'outline_colour'))
+        changes['edit'] = dict.fromkeys(('alignment', 'outline', 'primary_colour', 'outline_colour',
+                                       'bold', 'spacing', 'shadow', 'shadow_colour', 'shadow_outline'))
         changes['edit'].update({'font_family': style.pop('font_name'), **style})
     if not request.changes and request.style is None:
         raise ValueError('没有设置修改')

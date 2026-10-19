@@ -2853,6 +2853,10 @@ dialog header {
 .subtitle-settings-fields input[type=color] { width: 100%; height: 44px; padding: 4px; cursor: pointer; }
 .subtitle-preview-panel { min-width: 0; }
 #subtitle-style-preview { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 6px; border: 1px solid var(--line); }
+.subtitle-preset-picker { padding: 12px 0; }
+.subtitle-preset-sample { display: grid; padding: 22px 12px; text-align: center; background: #e5ebf0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.subtitle-preset-sample span { grid-area: 1 / 1; position: relative; }
+.subtitle-preset-sample span:last-child { z-index: 1; }
 .subtitle-preview-panel .hint { margin-top: 12px; line-height: 1.6; }
 .subtitle-settings-scope { padding-top: 20px; margin-top: 20px; border-top: 1px solid var(--line); color: var(--ink-2); line-height: 1.7; }
 .subtitle-settings .section-heading { flex-wrap: wrap; }

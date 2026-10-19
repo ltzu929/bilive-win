@@ -68,8 +68,9 @@ def validate_changes(changes: dict) -> dict:
             for key, value in fields.items():
                 if value is None and defaults[section][key] is None:
                     continue
-                expected = (int if key in {'font_size', 'margin_v', 'alignment'} else
-                            float if key == 'outline' else str)
+                expected = (bool if key == 'bold' else
+                            int if key in {'font_size', 'margin_v', 'alignment'} else
+                            float if key in {'outline', 'spacing', 'shadow', 'shadow_outline'} else str)
                 if not (type(value) in (int, float) if expected is float else type(value) is expected):
                     raise ValueError(f'设置类型无效: edit.{key}')
             validate_style({'font_name' if k == 'font_family' else k: v

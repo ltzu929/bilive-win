@@ -79,7 +79,11 @@ def test_subtitle_style_is_written_and_rejects_injection(tmp_path):
         with pytest.raises(ValueError):profiles.patch_streamer_profile(tmp_path,'123',{'default_subtitle_style':appearance})
 
 
-@pytest.mark.parametrize('override', [{}, {'outline': 3}, {'font_size': 32}])
+@pytest.mark.parametrize('override', [{}, {'outline': 3}, {'font_size': 32}] + [
+    dict(font_name='Douyin Sans', font_size=48, bold=True, spacing=5.76,
+         primary_colour=colour, outline_colour='&H00FFFFFF', outline=2,
+         shadow_colour=shadow, shadow=3, shadow_outline=10)
+    for colour, shadow in [('&H005959D9', '&H00ADADEE'), ('&H00D99859', '&H00EECBAD')]])
 def test_profile_style_api_preserves_only_explicit_overrides(tmp_path, monkeypatch, override):
     import importlib
     api = importlib.import_module('bilive.api.app')
@@ -107,10 +111,16 @@ def test_profile_style_api_preserves_only_explicit_overrides(tmp_path, monkeypat
     assert segment['subtitle_style'] == {**global_style, **override}
     subs.save(segment['segment_id'], 2, [SubtitleLine(1, 0, 1, 'test')], segment['revision'])
     ass = subs.write_ass(segment['segment_id'], tmp_path / 'subtitle.ass', segment['subtitle_style'])
-    assert f"Style: Default,Microsoft YaHei,{override.get('font_size', 80)}," in ass.read_text(encoding='utf-8')
+    assert f"Style: Default,{override.get('font_name', 'Microsoft YaHei')},{override.get('font_size', 80)}," in ass.read_text(encoding='utf-8')
     global_style['font_size'] = 96
     later = wb.points('123 - test/session.mp4', 2, 4, 'later', 'test')
     assert later['subtitle_style']['font_size'] == override.get('font_size', 96)
+    assert wb.load(segment['segment_id']) == segment
+    with TestClient(api.app) as client:
+        assert client.get('/api/streamers/456/profile').json()['profile']['default_subtitle_style'] == {}
+        assert client.post(url, json={'default_subtitle_style': {}}).status_code == 200
+    cleared = wb.points('123 - test/session.mp4', 4, 6, 'cleared', 'test')
+    assert cleared['subtitle_style'] == global_style
     assert wb.load(segment['segment_id']) == segment
 
 
