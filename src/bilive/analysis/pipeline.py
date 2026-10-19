@@ -285,7 +285,7 @@ class AnalysisPipeline:
                 guidance=str(profile.get('approved_guidance',''))[:2000],
                 danmaku_text='\n'.join(f'{t-event.start:.2f}s {text}' for t,text in danmaku if event.start <= t <= event.end),
                 candidate_duration=event.end-event.start,candidate_start=event.start,
-                candidate_core_start=event.burst_start,candidate_core_end=event.burst_end,
+                candidate_core_start=event.burst_start-event.start,candidate_core_end=event.burst_end-event.start,
                 candidate_transcript=self._judge_transcript(transcript))
             return {'results':results,'transcript':transcript}
         except Exception as exc:

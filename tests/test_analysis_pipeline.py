@@ -45,6 +45,24 @@ def test_judge_transcript_has_candidate_relative_cue_times():
     assert pipeline._judge_transcript(None) == ''
 
 
+def test_prepare_passes_burst_times_relative_to_candidate(monkeypatch):
+    from types import SimpleNamespace
+    settings = Settings()
+    settings.analysis.pre_judge_asr = False
+    observed = []
+    pipeline = AnalysisPipeline(settings, None, None, judge=lambda **kw: observed.append(kw) or [])
+    monkeypatch.setattr('bilive.analysis.pipeline.ensure_raw_cut', lambda *args: None)
+    event = SimpleNamespace(start=4200.0, end=4440.0, burst_start=4310.0, burst_end=4320.0)
+    prepared = pipeline._prepare(Path('source.mp4'), 'source.mp4', event, Path('candidate.mp4'), {},
+                                [(4312.0, '接梗')], {'display_name': '主播'})
+    assert 'error' not in prepared
+    assert observed[0]['candidate_start'] == 4200.0
+    assert observed[0]['candidate_duration'] == 240.0
+    assert observed[0]['candidate_core_start'] == 110.0
+    assert observed[0]['candidate_core_end'] == 120.0
+    assert observed[0]['danmaku_text'] == '112.00s 接梗'
+
+
 @pytest.mark.parametrize('pre_judge', [False, True])
 def test_auto_analysis_passes_streamer_hotwords_to_asr_and_correction(setup, pre_judge):
     from bilive.vendor.streamer_profiles import patch_streamer_profile
