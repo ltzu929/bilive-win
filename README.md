@@ -17,6 +17,17 @@
 
 完整目录见 [文档导航](docs/README.md)。
 
+## 开发验证
+
+修改裁剪、字幕烧录或重烧时，先运行成片回归；提交前运行全量 Python 回归：
+
+```powershell
+.venv-win/Scripts/python.exe -m pytest -q tests/test_finalize_pipeline.py
+.venv-win/Scripts/python.exe -m pytest -q
+```
+
+成片回归使用临时目录中的真实 FFmpeg 音视频，不调用外部模型或投稿。生成测试检查解码后的片段首尾内容、时长和字幕出现/消失；重烧测试检查画面中的字幕确实改变。涉及这些行为的修改应保留上述结果检查，不能退化为“文件存在”或只核对 ASS 文本。小视频使用显式可读字号、纯色背景和容差，不固定字体栅格或编码文件字节；它不证明中文识别、真实选段质量或所有字体显示正确。NVIDIA 用例仅在检测到 `nvidia-smi` 时运行，软件编码回归不依赖 NVIDIA。需安装 FFmpeg 和 ffprobe。
+
 ## 项目目录
 
 ```text
