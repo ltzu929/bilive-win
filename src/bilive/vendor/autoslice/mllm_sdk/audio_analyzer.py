@@ -27,7 +27,6 @@ from bilive.vendor.log.logger import scan_log
 
 
 _whisper_model = None
-_whisper_batch_pipeline = None
 _whisper_model_key: tuple[str, str, str, int] | None = None
 # Serialise Whisper usage so concurrent MiMo workers never share the model.
 _asr_lock = threading.Lock()
@@ -178,6 +177,9 @@ def transcribe_audio_whisper(
     vad_speech_pad_ms: int = WHISPER_VAD_SPEECH_PAD_MS,
     hotwords: str | None = None,
 ) -> dict[str, Any]:
+    # Retain batch_size for legacy callers/configuration; recognition is sequential.
+    # Batched decoding can silently discard speech after repetitive output and
+    # does not run WhisperModel's quality-based decoding retries.
     if engine != "faster-whisper":
         raise ValueError("Only faster-whisper is supported")
 
@@ -185,18 +187,12 @@ def transcribe_audio_whisper(
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise RuntimeError("faster-whisper is not installed") from exc
-    try:
-        from faster_whisper import BatchedInferencePipeline
-    except ImportError:
-        BatchedInferencePipeline = None
-
-    global _whisper_batch_pipeline, _whisper_model, _whisper_model_key
+    global _whisper_model, _whisper_model_key
     resolved_device = str(device or "cpu").strip().lower()
     resolved_compute_type = compute_type or (
         "int8" if resolved_device == "cpu" else "float16"
     )
     resolved_cpu_threads = max(1, int(cpu_threads))
-    resolved_batch_size = max(1, int(batch_size))
     model_key = (
         model_size,
         resolved_device,
@@ -239,15 +235,10 @@ def transcribe_audio_whisper(
                     )
                     raise
                 _whisper_model_key = model_key
-                _whisper_batch_pipeline = (
-                    BatchedInferencePipeline(_whisper_model)
-                    if BatchedInferencePipeline is not None
-                    else None
-                )
                 load_ms = round((time.perf_counter() - load_started) * 1000, 1)
                 scan_log.info(
                     f"ASR model load ok: {device_tag} load_ms={load_ms} "
-                    f"batched={_whisper_batch_pipeline is not None}"
+                    "mode=sequential"
                 )
             else:
                 scan_log.info(f"ASR model cache hit: {device_tag}")
@@ -261,34 +252,13 @@ def transcribe_audio_whisper(
             }
             if hotwords:
                 transcription_options["hotwords"] = hotwords
-            mode = "batched" if _whisper_batch_pipeline is not None else "sequential"
+            mode = "sequential"
             transcribe_started = time.perf_counter()
-            if _whisper_batch_pipeline is not None:
-                try:
-                    segment_iter, info = _whisper_batch_pipeline.transcribe(
-                        audio_path,
-                        batch_size=resolved_batch_size,
-                        **transcription_options,
-                    )
-                    raw_segments = list(segment_iter)
-                except Exception as batch_exc:
-                    scan_log.warning(
-                        "ASR batched transcription failed; "
-                        f"falling back to sequential mode: {device_tag} "
-                        f"error={batch_exc}"
-                    )
-                    mode = "sequential-fallback"
-                    segment_iter, info = _whisper_model.transcribe(
-                        audio_path,
-                        **transcription_options,
-                    )
-                    raw_segments = list(segment_iter)
-            else:
-                segment_iter, info = _whisper_model.transcribe(
-                    audio_path,
-                    **transcription_options,
-                )
-                raw_segments = list(segment_iter)
+            segment_iter, info = _whisper_model.transcribe(
+                audio_path,
+                **transcription_options,
+            )
+            raw_segments = list(segment_iter)
             transcribe_ms = round(
                 (time.perf_counter() - transcribe_started) * 1000, 1
             )
@@ -308,7 +278,7 @@ def transcribe_audio_whisper(
         scan_log.info(
             "ASR transcribe done: "
             f"{device_tag} mode={mode} "
-            f"batch_size={resolved_batch_size if mode.startswith('batched') else 1} "
+            "batch_size=1 "
             f"vad={bool(vad_filter)} segments={len(segments)} "
             f"chars={len(transcript)} transcribe_ms={transcribe_ms}"
         )
@@ -417,13 +387,12 @@ def release_gpu_memory(delay: float = 3.0) -> None:
 
 
 def unload_asr_models() -> None:
-    global _whisper_batch_pipeline, _whisper_model, _whisper_model_key
-    had_model = _whisper_model is not None or _whisper_batch_pipeline is not None
+    global _whisper_model, _whisper_model_key
+    had_model = _whisper_model is not None
     if _whisper_model is not None:
         scan_log.info(
             f"ASR model unload: model_key={_whisper_model_key} pid={os.getpid()}"
         )
-    _whisper_batch_pipeline = None
     _whisper_model = None
     _whisper_model_key = None
     if had_model:

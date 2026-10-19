@@ -140,10 +140,6 @@ def test_scene_keeps_one_asr_model_for_candidates_and_formal_recognition(setup, 
         def __init__(self, *args, **kwargs):
             loads.append(True)
 
-    class Batch:
-        def __init__(self, model):
-            self.model = model
-
         def transcribe(self, audio_path, **kwargs):
             recognitions.append(audio_path)
             cues = [types.SimpleNamespace(start=.2, end=1.8, text='有效字幕', words=[])]
@@ -152,9 +148,9 @@ def test_scene_keeps_one_asr_model_for_candidates_and_formal_recognition(setup, 
             return iter(cues), types.SimpleNamespace(language='zh')
 
     fake = types.ModuleType('faster_whisper')
-    fake.WhisperModel, fake.BatchedInferencePipeline = Model, Batch
+    fake.WhisperModel = Model
     monkeypatch.setitem(sys.modules, 'faster_whisper', fake)
-    for key in ('_whisper_model', '_whisper_batch_pipeline', '_whisper_model_key'):
+    for key in ('_whisper_model', '_whisper_model_key'):
         monkeypatch.setattr(audio, key, None)
     monkeypatch.setattr(audio, 'release_gpu_memory', lambda: releases.append(len(recognitions)))
     monkeypatch.setattr('bilive.worker.preflight.cached_asr_model', lambda settings: wb.videos)
@@ -184,7 +180,7 @@ def test_scene_keeps_one_asr_model_for_candidates_and_formal_recognition(setup, 
 @pytest.mark.parametrize('entry', ['run', 'transcribe_segment', 'retry_judge'])
 def test_asr_task_releases_cached_model_on_exception(monkeypatch, entry):
     from bilive.vendor.autoslice.mllm_sdk import audio_analyzer as audio
-    for key in ('_whisper_model', '_whisper_batch_pipeline', '_whisper_model_key'):
+    for key in ('_whisper_model', '_whisper_model_key'):
         monkeypatch.setattr(audio, key, object())
     released = []
     monkeypatch.setattr(audio, 'release_gpu_memory', lambda: released.append(True))
@@ -192,7 +188,7 @@ def test_asr_task_releases_cached_model_on_exception(monkeypatch, entry):
     with pytest.raises(AttributeError):
         getattr(pipeline, entry)(*(['source.mp4', 'task'] if entry == 'run' else [None]))
     assert released == [True]
-    assert audio._whisper_model is None and audio._whisper_batch_pipeline is None
+    assert audio._whisper_model is None and audio._whisper_model_key is None
 
 
 def result(start=0.2,end=1.8,quality=0.9):

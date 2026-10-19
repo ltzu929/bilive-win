@@ -700,7 +700,7 @@ function editableConfigSection(title, section, excluded = []) {
   const editor = settingsView.config.editor;
   if (!editor) return configSection(title, settingsView.config.settings[section]);
   const values = {...editor.values[section], ...settingsView.configDraft[section]};
-  const fields = Object.entries(editor.schema[section] || {}).filter(([key]) => !excluded.includes(key));
+  const fields = Object.entries(editor.schema[section] || {}).filter(([key]) => !excluded.includes(key) && !(section === "subtitle" && key === "asr_batch"));
   return `<section class="card card-pad"><h2>${title}</h2>${fields.map(([key, spec]) => {
     const value = values[key], attrs = `data-config-section="${section}" data-config-key="${key}"`;
     let input;
