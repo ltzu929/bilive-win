@@ -111,6 +111,19 @@ def append_experience(
         return payload
 
 
+def is_duplicate_experience(item: dict[str, Any]) -> bool:
+    """Keep duplicate disposal separate from a judgment about content quality."""
+    return bool(item.get('duplicate_of')) or any(
+        str(item.get(key) or '').strip() in {'已切', '已切过'}
+        for key in ('human_reason', 'drop_reason', 'reason_type', 'note')
+    )
+
+
+def _is_content_experience(item: dict[str, Any]) -> bool:
+    return (item.get('experience_type') in VALID_CONTENT_EXPERIENCE_TYPES
+            and not is_duplicate_experience(item))
+
+
 def streamer_evidence_summary(
     videos_root: str | Path,
     room_id: str,
@@ -124,7 +137,7 @@ def streamer_evidence_summary(
     valid = [
         item
         for item in experiences
-        if item.get("experience_type") in VALID_CONTENT_EXPERIENCE_TYPES
+        if _is_content_experience(item)
     ]
     positive = [item for item in valid if item.get("conclusion") == "positive"]
     negative = [item for item in valid if item.get("conclusion") == "negative"]
@@ -154,7 +167,7 @@ def generate_streamer_recommendation(
     valid = [
         item
         for item in experiences
-        if item.get("experience_type") in VALID_CONTENT_EXPERIENCE_TYPES
+        if _is_content_experience(item)
     ]
     positive = [
         item
@@ -174,15 +187,23 @@ def generate_streamer_recommendation(
     if base["evidence_status"] != "ready":
         return base
 
-    reason_counts = Counter(
-        str(item.get("reason_type") or "content_review")
-        for item in negative + [
-            item for item in valid if item.get("experience_type") == "missed_segment_positive"
-        ]
-    )
+    # Older records can contain model explanations in note. Only use an explicit
+    # human reason, or the legacy reason_type, rather than presenting those as feedback.
+    reason_counts = Counter()
+    for item in negative:
+        reason = str(item.get('human_reason') or item.get('reason_type') or '').strip()
+        if reason and reason != 'content_review':
+            if not item.get('human_reason') and str(item.get('note') or '').startswith(reason):
+                reason = item['note']
+            reason_counts[reason] += 1
     reasons = [item for item, _count in reason_counts.most_common(3)]
-    guidance = "；".join(reasons) if reasons else "保留完整主题、发展和落点"
-    guidance = f"人工样本提示：重点检查 {guidance}。"
+    guidance = (
+        "结合当前音画和人工保留、废弃样本，核对人工反馈所指的具体问题。"
+        "保留必要铺垫和最后有效回应，不按关键词或固定时长一律删除。"
+    )
+    if reasons:
+        guidance += '\n人工废弃理由（仅用于核对相似情况，不代表所有此类话题都应删除）：\n'
+        guidance += '\n'.join(f'- {reason[:500]}' for reason in reasons)
     evidence_ids = [str(item.get("experience_id") or "") for item in valid]
 
     def mutate(data: dict[str, Any]) -> dict[str, Any]:
@@ -190,7 +211,8 @@ def generate_streamer_recommendation(
         if not isinstance(recommendations, list):
             recommendations = []
         for item in recommendations:
-            if isinstance(item, dict) and item.get("evidence_ids") == evidence_ids:
+            if (isinstance(item, dict) and item.get("evidence_ids") == evidence_ids
+                    and item.get('changes', {}).get('approved_guidance') == guidance):
                 return data
         recommendations.append(
             {
@@ -217,6 +239,7 @@ def generate_streamer_recommendation(
                         "reason_type": item.get("reason_type"),
                         "reason": item.get("reason"),
                         "note": item.get("note"),
+                        "human_reason": item.get("human_reason"),
                     }
                     for item in valid
                 ],

@@ -10,6 +10,7 @@ from bilive.domain.models import ActionJobStatus, SubtitleLine, clamp_subtitle_t
 from bilive.jobs.action_jobs import ActionConflict, ActionJobStore
 from bilive.media.finalize import Finalizer, PipelineError
 from bilive.media.subtitle_store import SubtitleStore
+from bilive.media.editorial import feedback, record_edit, snapshot
 from bilive.upload.queue import UploadQueue
 from bilive.worker.locks import ProcessLock
 from bilive.worker.timing import timed_stage
@@ -115,12 +116,13 @@ class Workbench:
         s["state"] = "needs_finalize"
 
     def points(self, rel: str, start: float, end: float, title: str,
-               note: str, sid: str | None = None, expected: int | None = None) -> dict:
+               note: str, sid: str | None = None, expected: int | None = None,
+               *, uncertain: bool = False) -> dict:
         self.source(rel)
         if not all(math.isfinite(x) for x in (start, end)) or start < 0 or end <= start:
             raise ValueError("invalid source range")
-        if not note.strip():
-            raise ValueError("manual selection reason required")
+        human = feedback(note, uncertain)
+        action = 'range' if sid else 'create'
         with self.lock():
             from bilive.lifecycle.review import SourceReview
             self.check_source_idle(rel)
@@ -134,6 +136,7 @@ class Workbench:
                 self.editable(s)
                 if s["source_relpath"] != rel:
                     raise ValueError("cannot change segment source")
+                before = snapshot(s)
                 self.invalidate(s)
                 s["revision"] += 1
                 s["subtitles_revision"] = None
@@ -143,8 +146,10 @@ class Workbench:
                 validate_id(sid)
                 if (self.root / f"{sid}.json").is_file():
                     return self.load(sid)
+                before = {}
                 s = {"segment_id": sid, "source_relpath": rel, "revision": 1,
                      "state": "needs_finalize", "decision": "manual_keep",
+                     "selection_origin": "manual", "human_feedback": human,
                      "final_path": None, "final_revision": None,
                      "subtitles_revision": None, "publish_approval": False}
                 from bilive.lifecycle.profiles import profile_for_source
@@ -154,7 +159,8 @@ class Workbench:
                 from bilive.media.publication import defaults_for_segment
                 s.update(defaults_for_segment(self, rel, title))
                 title = s['title']
-            s.update(source_start=start, source_end=end, title=title, note=note)
+            s.update(source_start=start, source_end=end, title=title)
+            record_edit(s, action, before, human)
             self.save(s)
             return s
 
@@ -163,21 +169,41 @@ class Workbench:
         if expected != s["revision"]:
             raise ActionConflict("revision conflict; reload the segment and keep your draft")
 
-    def keep(self, sid: str, expected: int) -> dict:
+    def keep(self, sid: str, expected: int, reason: str | None = None,
+             uncertain: bool | None = None) -> dict:
         """Confirm the editorial decision without changing the media revision."""
         with self.lock():
             s = self.load(sid)
             self.check_revision(s, expected)
             self.editable(s)
+            before = snapshot(s)
+            previous = s.get('human_feedback', {})
+            human = feedback(previous.get('reason', '') if reason is None else reason,
+                             previous.get('uncertain', False) if uncertain is None else uncertain)
             s['technical_failure'] = bool(s.get('technical_failure') or s.get('processing_error') or s['decision'] == 'judge_failed')
-            s.update(decision='manual_keep', human_reviewed=True)
+            s.update(decision='manual_keep', human_reviewed=True, human_feedback=human)
             if s.get('state') == 'needs_review':
                 s['state'] = 'awaiting_publish' if self.valid_final(s) else 'needs_finalize'
+            record_edit(s, 'keep', before, human)
+            self.save(s)
+            return self.detail(sid)
+
+    def save_feedback(self, sid: str, expected: int, reason: str, uncertain: bool = False) -> dict:
+        human = feedback(reason, uncertain)
+        with self.lock():
+            s = self.load(sid)
+            self.check_revision(s, expected)
+            self.editable(s)
+            before = snapshot(s)
+            s['human_feedback'] = human
+            record_edit(s, 'feedback', before, human)
             self.save(s)
             return self.detail(sid)
 
     def save_metadata(self, sid: str, expected: int, title: str, description: str, tags: list[str], tid: int | None = None,
-                      publication_options: dict | None = None, *, dynamic: str | None = None) -> dict:
+                      publication_options: dict | None = None, *, dynamic: str | None = None,
+                      reason: str = '') -> dict:
+        human = feedback(reason)
         title = title.strip()
         tags = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
         if not title or len(title) > 80:
@@ -194,6 +220,7 @@ class Workbench:
             s = self.load(sid)
             self.check_revision(s, expected)
             self.editable(s)
+            before = snapshot(s)
             saved_dynamic = s.get('dynamic', '') if dynamic is None else dynamic
             options = {key: s.get(key) for key in ('topic', 'season')}
             if publication_options is not None:
@@ -225,6 +252,7 @@ class Workbench:
                 s['subtitles_revision'] = s['revision']
             if s.get('final_revision') == expected:
                 s['final_revision'] = s['revision']
+            record_edit(s, 'metadata', before, human)
             self.save(s)
             return self.detail(sid)
 
@@ -308,16 +336,19 @@ class Workbench:
         row = self.uploads.get_by_path(s["final_path"])
         return bool(row)
 
-    def drop(self, sid: str, expected: int, reason: str) -> dict:
-        if not reason.strip():
-            raise ValueError('drop reason required')
+    def drop(self, sid: str, expected: int, reason: str, *, uncertain: bool = False,
+             kind: str = 'content') -> dict:
+        human = feedback(reason, uncertain, kind)
         with self.lock():
             s = self.load(sid)
             self.check_revision(s, expected)
             self.editable(s)
+            before = snapshot(s)
             s['technical_failure'] = bool(s.get('technical_failure') or s.get('processing_error') or s['decision'] == 'judge_failed')
             self.invalidate(s)
-            s.update(decision='drop', state='dropped', drop_reason=reason, revision=s['revision'] + 1)
+            s.update(decision='drop', state='dropped', drop_reason=human['reason'],
+                     human_feedback=human, revision=s['revision'] + 1)
+            record_edit(s, 'drop', before, human)
             self.save(s)
             return s
 

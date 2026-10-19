@@ -6,7 +6,7 @@ import os
 import ipaddress
 from urllib.parse import urlsplit
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -155,7 +155,8 @@ class ApiError(BaseModel):
 class SegmentEdit(BaseModel):
     segment_id: str | None = None
     expected_revision: int | None = None
-    note: str = ""
+    note: str = Field(default='', max_length=1000)
+    uncertain: bool = False
     source_relpath: str
     source_start: float = Field(ge=0)
     source_end: float = Field(ge=0)
@@ -206,7 +207,9 @@ class SourceReviewRequest(BaseModel):
 
 class DropRequest(BaseModel):
     expected_revision: int
-    reason: str
+    reason: str = Field(default='', max_length=1000)
+    uncertain: bool = False
+    kind: Literal['content', 'technical', 'duplicate'] = 'content'
 
 
 class StyleRequest(BaseModel):
@@ -216,15 +219,29 @@ class StyleRequest(BaseModel):
 
 class KeepRequest(BaseModel):
     expected_revision: int
+    reason: str | None = Field(default=None, max_length=1000)
+    uncertain: bool | None = None
 
 
 @app.post('/api/segments/{segment_id}/keep')
 def keep_segment(segment_id: str, request: KeepRequest):
-    return workbench.keep(segment_id, request.expected_revision)
+    return workbench.keep(segment_id, request.expected_revision, request.reason, request.uncertain)
+
+
+class FeedbackRequest(BaseModel):
+    expected_revision: int
+    reason: str = Field(default='', max_length=1000)
+    uncertain: bool = False
+
+
+@app.post('/api/segments/{segment_id}/feedback')
+def save_segment_feedback(segment_id: str, request: FeedbackRequest):
+    return workbench.save_feedback(segment_id, request.expected_revision, request.reason, request.uncertain)
 
 
 class MetadataRequest(BaseModel):
     expected_revision: int
+    reason: str = Field(default='', max_length=1000)
     title: str
     description: str = ''
     tags: list[str] = Field(default_factory=list)
@@ -273,7 +290,7 @@ def save_segment_metadata(segment_id: str, request: MetadataRequest):
             options = publication_client().publication_options.validate_options(**options)
     return workbench.save_metadata(segment_id, request.expected_revision,
                                    request.title, request.description, request.tags, request.tid, options,
-                                   dynamic=request.dynamic)
+                                   dynamic=request.dynamic, reason=request.reason)
 
 
 class PreviewRequest(BaseModel):
@@ -340,7 +357,8 @@ def queue_recycle(task_id: str):
 
 @app.post('/api/segments/{segment_id}/drop')
 def drop_segment(segment_id: str, request: DropRequest):
-    return workbench.drop(segment_id, request.expected_revision, request.reason)
+    return workbench.drop(segment_id, request.expected_revision, request.reason,
+                          uncertain=request.uncertain, kind=request.kind)
 
 
 @app.get("/api/health")
@@ -426,7 +444,8 @@ def final_media(segment_id: str):
 def set_segment_points(edit: SegmentEdit) -> dict[str, Any]:
     edit.validate_range()
     return workbench.points(edit.source_relpath, edit.source_start, edit.source_end,
-                            edit.title, edit.note, edit.segment_id, edit.expected_revision)
+                            edit.title, edit.note, edit.segment_id, edit.expected_revision,
+                            uncertain=edit.uncertain)
 
 
 @app.post("/api/subtitles/save")

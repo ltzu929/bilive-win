@@ -69,6 +69,82 @@ def test_review_technical_drop_keeps_evidence_and_is_not_negative(tmp_path):
     assert profiles.read_experiences(videos,room_id='123')[0]['source_rel_path']
 
 
+@pytest.mark.parametrize('reason,duplicate_of,kind', [
+    ('已切', None, 'duplicate'),
+    ('另一个版本已保留', 'retained-version', 'duplicate'),
+    ('没意思', None, 'negative'),
+    ('太短了，后续回应没有截完', None, 'negative'),
+])
+def test_review_preserves_human_reason_and_separates_duplicate_disposal(
+    tmp_path, reason, duplicate_of, kind,
+):
+    videos = tmp_path / 'Videos'
+    source = videos / '123 - 甲/session.mp4'
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b'fixture')
+    artifacts = tmp_path / 'artifacts'
+    db = tmp_path / 'queue.db'
+    init_upload_db(db)
+    wb = Workbench(videos, artifacts, ActionJobStore(tmp_path / 'jobs'),
+                   SubtitleStore(artifacts / 'subtitles'), UploadQueue(db))
+    segment = wb.points('123 - 甲/session.mp4', 0, 2, '标题', '模型称完整且有趣')
+    segment['duplicate_of'] = duplicate_of
+    wb.save(segment)
+    dropped = wb.drop(segment['segment_id'], segment['revision'], reason)
+    record = record_review(wb, '123 - 甲/session.mp4', 'task', [dropped], '')[0]
+    assert record['experience_type'] == record['conclusion'] == kind
+    assert record['human_reason'] == reason
+    assert record['duplicate_of'] == duplicate_of
+    assert profiles.streamer_evidence_summary(videos, '123')['negative_count'] == (kind == 'negative')
+
+
+def test_recommendation_excludes_legacy_duplicates_and_keeps_human_feedback(tmp_path):
+    for i in range(4):
+        sample(tmp_path, '123', i, 'positive')
+    profiles.append_experience(tmp_path, {
+        'room_id': '123', 'experience_type': 'negative', 'conclusion': 'negative',
+        'reason_type': '已切', 'note': '已切', 'dedupe_key': 'legacy-duplicate',
+    })
+    profiles.append_experience(tmp_path, {
+        'room_id': '123', 'experience_type': 'duplicate', 'conclusion': 'duplicate',
+        'human_reason': '另一个版本已保留', 'dedupe_key': 'duplicate',
+    })
+    assert profiles.generate_streamer_recommendation(tmp_path, '123')['evidence_status'] == 'insufficient_evidence'
+    reason = '我只要搞笑的，这种容易引起对立，是负面的'
+    profiles.append_experience(tmp_path, {
+        'room_id': '123', 'experience_type': 'negative', 'conclusion': 'negative',
+        'reason_type': 'content_review', 'human_reason': reason,
+        'note': '模型认为该片段观点清楚、话题性强', 'dedupe_key': 'human-rejection',
+    })
+    experiences = profiles._experience_path(tmp_path)
+    before = experiences.read_bytes()
+    recommendation = profiles.generate_streamer_recommendation(tmp_path, '123')['recommendations'][-1]
+    assert recommendation['sample_size'] == 5
+    assert recommendation['negative_count'] == 1
+    assert all(row['note'] != '已切' for row in recommendation['basis'])
+    guidance = recommendation['changes']['approved_guidance']
+    assert reason in guidance and 'content_review' not in guidance
+    assert '模型认为' not in guidance
+    assert profiles.read_streamer_profile(tmp_path, '123')['approved_guidance'] == ''
+    assert experiences.read_bytes() == before
+
+
+def test_recommendation_can_refresh_old_guidance_with_the_same_evidence(tmp_path):
+    for i in range(4):
+        sample(tmp_path, '123', i, 'positive')
+    sample(tmp_path, '123', 4, 'negative')
+    first = profiles.generate_streamer_recommendation(tmp_path, '123')['recommendations'][-1]
+    def old_guidance(state):
+        state['recommendations'][-1]['changes']['approved_guidance'] = '人工样本提示：重点检查 content_review。'
+        return state
+    profiles.mutate_streamer_state(tmp_path, '123', old_guidance)
+    recommendations = profiles.generate_streamer_recommendation(tmp_path, '123')['recommendations']
+    assert len(recommendations) == 2
+    assert recommendations[-1]['evidence_ids'] == first['evidence_ids']
+    assert 'content_review' not in recommendations[-1]['changes']['approved_guidance']
+    assert len(profiles.generate_streamer_recommendation(tmp_path, '123')['recommendations']) == 2
+
+
 def test_subtitle_style_is_written_and_rejects_injection(tmp_path):
     subs=SubtitleStore(tmp_path/'subtitles')
     subs.save('segment',2,[SubtitleLine(1,0,1,'字幕')],1)

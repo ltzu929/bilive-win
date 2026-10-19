@@ -1,7 +1,7 @@
 /* A single segment's posting draft. Saving never activates the upload queue. */
 let submissionTimer;
 let submissionView = null;
-const submissionFields = ['title', 'description', 'tags', 'tid', 'topic', 'season', 'dynamic'];
+const submissionFields = ['title', 'description', 'tags', 'tid', 'topic', 'season', 'dynamic', 'reason'];
 const submissionSourceId = s => btoa(Array.from(new TextEncoder().encode(s.source_relpath.replaceAll('\\', '/')), b => String.fromCharCode(b)).join('')).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
 const submissionDraftKey = s => `bilive:metadata:${submissionSourceId(s)}:${s.segment_id}`;
 const submissionReturnLink = s => pageLink('library', {source_task_id: submissionSourceId(s), segment_id: s.segment_id, mode: 'final'});
@@ -55,16 +55,18 @@ function drawSubmission(view) {
               <div class="submission-field"><label for="submission-topic">话题 / 活动</label><div><div class="submission-search"><input id="submission-topic-keywords" maxlength="100" placeholder="输入话题关键词"><button id="submission-topic-search" type="button" class="btn btn-secondary">搜索</button></div><select id="submission-topic"><option value="">不参与话题</option>${s.topic ? submissionOption(s.topic, submissionTopicLabel(s.topic)) : ''}</select><p class="hint" id="submission-topic-info" role="status">话题占一个标签，活动收录以活动规则为准。</p></div></div>
               <div class="submission-field"><label for="submission-season">加入合集</label><div><div class="submission-search"><select id="submission-season"><option value="">不加入合集</option>${s.season ? submissionOption(s.season, submissionSeasonLabel(s.season)) : ''}</select><button id="submission-season-load" type="button" class="btn btn-secondary">读取合集</button></div><p class="hint" id="submission-season-info" role="status">投稿成功后加入所选合集和小节。</p></div></div>
               <details class="submission-more" open><summary>更多设置</summary><div class="submission-field"><label for="submission-dynamic">粉丝动态</label><div><textarea id="submission-dynamic" rows="3" maxlength="233" placeholder="随视频发布的动态文案（选填）"></textarea><p class="submission-counter" id="submission-dynamic-count"></p></div></div></details>
+              <div class="submission-field"><label for="submission-reason">改文案的理由</label><div><input id="submission-reason" maxlength="1000" placeholder="选填，例如：原话没说两小时 / 标题没点出真正的梗"><p class="hint">随草稿保存，仅供复核，不会发到 B 站。</p></div></div>
             </fieldset>
           </section>
           <section class="card submission-section submission-suggestion"><div class="submission-section-title"><div><h2>文案助手</h2><p class="hint">根据当前已保存字幕生成建议，采用后仍可修改。</p></div><button id="submission-generate" type="button" class="btn btn-secondary">${icon('file-text')}生成文案建议</button></div><div id="submission-suggestion" aria-live="polite">${metadataSuggestionHTML(s)}</div></section>
           <footer class="submission-footer"><div><strong id="submission-save-state" role="status">投稿资料已保存</strong><p class="hint" id="submission-feedback" role="status">保存草稿后可稍后继续，点击提交才会开始后台投稿。</p></div><div class="action-row"><button id="submission-save" type="button" class="btn btn-secondary">保存草稿</button><button id="submission-submit" type="submit" class="btn btn-primary">${icon('cloud-upload')}提交投稿</button></div></footer>
+          <section id="submission-editorial-history" class="card submission-section">${editorialHistoryHTML(s)}</section>
         </form>
         <aside class="submission-preview card"><h2>成片预览</h2>${s.final_valid ? `<video controls preload="metadata" src="${htmlEscape(apiURL(`/api/media/final/${encodeURIComponent(s.segment_id)}?revision=${s.revision}`))}" ${s.cover_path ? `poster="${htmlEscape(apiURL(`/api/segments/${encodeURIComponent(s.segment_id)}/cover`))}?revision=${s.revision}"` : ''}></video>` : emptyState('请返回工作台生成当前版本成片')}<div class="submission-preview-info"><strong id="submission-preview-title">${htmlEscape(s.title)}</strong><p>${htmlEscape(meta.upName)}</p><p>${timecode(s.source_end - s.source_start, true)} · 当前成片</p></div><a href="${submissionReturnLink(s)}">${icon('arrow-left')}返回检查字幕与画面</a><a href="${pageLink('publish', {segment_id: s.segment_id})}">${icon('list-details')}查看发布进度</a></aside>
       </div>
     </div>`;
   const controls = submissionFields.map(key => document.getElementById(`submission-${key}`));
-  const values = [s.title || '', s.description || '', (s.tags || []).join('，'), s.tid || '', s.topic ? JSON.stringify(s.topic) : '', s.season ? JSON.stringify(s.season) : '', s.dynamic || ''];
+  const values = [s.title || '', s.description || '', (s.tags || []).join('，'), s.tid || '', s.topic ? JSON.stringify(s.topic) : '', s.season ? JSON.stringify(s.season) : '', s.dynamic || '', ''];
   controls.forEach((control, i) => { control.value = values[i]; });
   view.controls = controls;
   view.savedValues = controls.map(c => c.value);
@@ -194,6 +196,7 @@ async function saveSubmission(view) {
     expected_revision: view.segment.revision, title: values[0], description: values[1],
     tags: values[2].split(/[,，\n]/).map(t => t.trim()).filter(Boolean), tid: values[3] ? Number(values[3]) : null,
     topic: values[4] ? JSON.parse(values[4]) : null, season: values[5] ? JSON.parse(values[5]) : null, dynamic: values[6],
+    reason: values[7],
   });
     if ((updated.dynamic || '') !== values[6]) throw new Error('当前工作台服务尚未支持动态文案，请更新并重启服务后重试');
   } catch (error) {
@@ -207,10 +210,12 @@ async function saveSubmission(view) {
   if (!view.current()) return;
   view.segment = updated;
   view.draftRevision = updated.revision;
-  view.savedValues = values;
+  document.getElementById('submission-reason').value = '';
+  view.savedValues = view.controls.map(c => c.value);
   view.dirty = false;
   try { localStorage.removeItem(submissionDraftKey(updated)); } catch { /* Server save succeeded. */ }
   document.getElementById('submission-suggestion').innerHTML = metadataSuggestionHTML(updated);
+  document.getElementById('submission-editorial-history').innerHTML = editorialHistoryHTML(updated);
 }
 
 async function runSubmission(view, action) {

@@ -36,10 +36,17 @@ def record_review(wb, rel: str, task: str, segments: list[dict], note: str):
         return []
     records = []
     for s in segments:
-        technical = bool(s.get('processing_error') or s.get('technical_failure') or s['decision'] == 'judge_failed')
+        human = s.get('human_feedback', {})
+        human_reason = human.get('reason', '') if 'human_feedback' in s else s.get('drop_reason') or s.get('missed_reason') or ''
+        technical = bool(human.get('kind') == 'technical' or s.get('processing_error') or s.get('technical_failure') or s['decision'] == 'judge_failed')
+        duplicate = s['decision'] == 'drop' and (human.get('kind') == 'duplicate' or store.is_duplicate_experience(s))
         kind = ('technical_failure' if technical else
+                'duplicate' if duplicate else
+                'uncertain' if human.get('uncertain') else
                 'negative' if s['decision'] == 'drop' else
-                'missed_segment_positive' if s['decision'] == 'manual_keep' else 'positive')
+                'missed_segment_positive' if s.get('missed_reason') else 'positive')
+        edits = s.get('editorial_history', [])
+        initial = edits[0].get('before', {}) if edits else s
         transcript = ' '.join(v['text'] for v in wb.subtitles.load(s['segment_id'])['lines'])[:1000]
         # Evidence remains available after the source package is recycled.
         texts = []
@@ -49,13 +56,19 @@ def record_review(wb, rel: str, task: str, segments: list[dict], note: str):
             texts = [text for ts, text in read_danmaku(xml) if s['source_start'] <= ts <= s['source_end']]
         records.append(store.append_experience(wb.videos, {
             'room_id':room, 'task_id':task, 'source_rel_path':rel, 'segment_id':s['segment_id'],
-            'experience_type':kind, 'conclusion':'technical_failure' if technical else ('negative' if kind == 'negative' else 'positive'),
-            'reason_type':'technical_failure' if technical else str(s.get('missed_reason') or s.get('drop_reason') or s.get('note') or 'content_review')[:100],
-            'note':s.get('drop_reason') or s.get('note') or note,
-            'model_judgment':s['decision'], 'model_scores':{k:s.get(k) for k in ('quality_score','completeness_score','confidence')},
+            'title':s.get('title', ''),
+            'experience_type':kind, 'conclusion':kind if kind in {'technical_failure', 'duplicate', 'negative', 'uncertain'} else 'positive',
+            'reason_type':'technical_failure' if technical else str(human_reason or 'content_review')[:100],
+            'note':human_reason, 'original_note':s.get('note', ''),
+            'human_reason':human_reason, 'human_feedback':human,
+            'human_decision':s['decision'], 'selection_origin':s.get('selection_origin', 'unknown'),
+            'editorial_history':edits,
+            'duplicate_of':s.get('duplicate_of'),
+            'model_judgment':initial.get('decision') if initial.get('decision') != 'manual_keep' else None,
+            'model_scores':{k:initial.get(k) for k in ('quality_score','completeness_score','confidence')},
             'start_seconds':s['source_start'], 'end_seconds':s['source_end'],
             'transcript_summary':transcript, 'danmaku_summary':{'count':len(texts),'text':' '.join(texts)[:1000]},
-            'dedupe_key':f"{room}:{task}:{s['segment_id']}:{s['revision']}:{kind}",
+            'dedupe_key':f"{room}:{task}:{s['segment_id']}:{s['revision']}:{kind}:{len(edits)}",
         }))
     if not segments:
         records.append(store.append_experience(wb.videos, {'room_id':room,'task_id':task,

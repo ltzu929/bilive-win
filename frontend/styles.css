@@ -3158,6 +3158,19 @@ dialog header {
 #submission-notice:not(:empty) { margin-bottom: 20px; }
 .submission-summary { display: flex; flex-direction: column; gap: 10px; padding-bottom: 16px; }
 .submission-summary p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.editorial-feedback { margin: 12px 0; }
+.editorial-feedback > .field { margin-top: 12px; }
+.editorial-check { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0; font-size: 12px; }
+.editorial-check input { width: auto; margin-top: 2px; flex-shrink: 0; }
+.editorial-history { margin-top: 16px; min-width: 0; }
+.editorial-history article { padding: 12px 0; border-bottom: 1px solid var(--line-soft); }
+.editorial-history article:last-child { border-bottom: 0; }
+.editorial-note { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; }
+.editorial-changes { overflow-x: auto; }
+.editorial-changes table { table-layout: fixed; width: 100%; }
+.editorial-changes th:first-child { width: 70px; }
+.editorial-changes td { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; }
+#review-range-reason-field { margin-top: 12px; }
 @media (max-width: 1180px) {
   .submission-layout { grid-template-columns: minmax(0, 1fr) 250px; gap: 16px; }
   .submission-section { padding: 22px 20px; }

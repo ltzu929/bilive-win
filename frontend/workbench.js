@@ -230,7 +230,8 @@ function captureRangeDraft() {
   if (!s || !start || !end || document.getElementById("review-source")?.dataset.segment !== s.segment_id) return;
   if (start.value === timecode(s.source_start) && end.value === timecode(s.source_end))
     rangeDrafts.delete(s.segment_id);
-  else rangeDrafts.set(s.segment_id, {start: start.value, end: end.value});
+  else rangeDrafts.set(s.segment_id, {start: start.value, end: end.value,
+    reason: document.getElementById('review-range-reason')?.value || ''});
 }
 function rangePoint(id, saved) {
   const input = document.getElementById(id).value.trim();
@@ -438,6 +439,12 @@ function updateReviewActions() {
   }
   const dirty = review.unsaved || review.styleUnsaved || review.rangeUnsaved;
   const locked = s.publish_approval || s.active_job || s.state === "dropped";
+  for (const id of ['review-human-reason', 'review-human-uncertain', 'review-feedback-save']) {
+    const control = document.getElementById(id);
+    if (control) control.disabled = !!(locked || review.lifecycle?.review_state === 'review_complete');
+  }
+  const rangeReason = document.getElementById('review-range-reason-field');
+  if (rangeReason) rangeReason.hidden = !review.rangeUnsaved;
   const subtitleReady = s.subtitles_revision === s.revision && s.subtitles?.length > 0;
   const finalize = document.getElementById("review-finalize"),
     approve = document.getElementById("review-approve");
@@ -718,6 +725,8 @@ function arrangeReviewWorkbench() {
   const range = grid.querySelector(".range-controls");
   context.querySelector(".context-range").append(range);
   if (drop) context.querySelector(".context-decisions").append(drop);
+  context.querySelector('.context-decisions').insertAdjacentHTML('beforebegin', editorialFeedbackHTML(review.segment));
+  context.querySelector('.context-range').insertAdjacentHTML('beforeend', '<label class="field" id="review-range-reason-field" hidden>范围调整理由（选填）<input id="review-range-reason" maxlength="1000" placeholder="例如：后面还有一句回应 / 开头无关"></label>');
   grid.append(context);
   const tabs = editor.querySelector(".tabs");
   tabs.outerHTML = tabsHTML([["content", "候选"], ["subtitles", "字幕"], ["final", "成片"]], review.tab, "data-review-tab");
@@ -765,7 +774,8 @@ function reviewMarkup(s, task, lines, initial) {
   const content = s
     ? `${submissionSummaryHTML(s)}<h3>内容与判断</h3>${definitionRows([
         ["片段状态", reviewStates[s.state] || s.state],
-        ["人工依据", s.note || "暂无"],
+        ["人工取舍理由", s.human_feedback?.reason || s.drop_reason || s.missed_reason || "未填写"],
+        ["原有判断说明", s.note || "暂无"],
         ["质量", s.quality ?? s.quality_score ?? "—"],
         ["完整度", s.completeness ?? s.completeness_score ?? "—"],
         ["置信度", s.confidence ?? "—"],
@@ -799,12 +809,12 @@ function reviewMarkup(s, task, lines, initial) {
     (s ? dialogHTML(
       "drop-dialog",
       "废弃当前片段",
-      `<p>废弃“${htmlEscape(s.title || "当前片段")}”后，本片段停止成片和发布，并撤回尚未批准的成片暂存。源录播保留。</p><label class="field">废弃原因（选填）<input id="review-drop-reason" placeholder="例如：没有必要切片"></label><div class="dialog-actions"><button id="review-drop" class="btn btn-primary">确认废弃</button></div>`,
+      `<p>废弃“${htmlEscape(s.title || "当前片段")}”后，本片段停止成片和发布，并撤回尚未批准的成片暂存。源录播保留。</p><label class="field">废弃类型<select id="review-drop-kind"><option value="content">内容不想留</option><option value="duplicate">已切过 / 重复版本</option><option value="technical">技术问题，与内容好坏无关</option></select></label><label class="field">废弃原因（选填）<input id="review-drop-reason" maxlength="1000" placeholder="例如：只是交代经过，没有想看的反应"></label><label class="editorial-check"><input id="review-drop-uncertain" type="checkbox">拿不准，不作为明确好坏样本</label><div class="dialog-actions"><button id="review-drop" class="btn btn-primary">确认废弃</button></div>`,
     ) : "") +
     dialogHTML(
       "points-dialog",
       "人工补选 / 编辑片段",
-      `<label class="field">标题<input id="review-title" value="${htmlEscape(s?.title || "")}"></label><label class="field">人工补片依据<input id="review-note" value="${htmlEscape(s?.note || "")}" placeholder="为什么保留此区间"></label><p class="muted">入出点使用右侧填写的源时间。“新建人工片段”会增加一条候选；修改当前片段请使用“保存当前片段范围”。</p><div class="dialog-actions"><button id="review-create" class="btn btn-primary">新建人工片段</button>${s ? '<button id="review-range" class="btn btn-secondary">保存当前片段范围</button>' : ""}</div>`,
+      `<label class="field">标题<input id="review-title" value="${htmlEscape(s?.title || "")}"></label><label class="field">补选 / 修改理由（选填）<input id="review-note" maxlength="1000" placeholder="哪处值得留下 / 为什么改到这里"></label><label class="editorial-check"><input id="review-points-uncertain" type="checkbox">拿不准</label><p class="muted">入出点使用右侧填写的源时间。“新建人工片段”会增加一条候选；修改当前片段请使用“保存当前片段范围”。</p><div class="dialog-actions"><button id="review-create" class="btn btn-primary">新建人工片段</button>${s ? '<button id="review-range" class="btn btn-secondary">保存当前片段范围</button>' : ""}</div>`,
     ) +
     dialogHTML(
       "finish-dialog",
@@ -1090,7 +1100,7 @@ function drawManualWorkbench() {
     setRangePoint("review-start", source.currentTime);
   document.getElementById("review-out").onclick = () =>
     setRangePoint("review-end", source.currentTime);
-  const points = async (update) => {
+  const points = async (update, rangeReason) => {
     try {
       if (update && (review.unsaved || review.styleUnsaved))
         throw new Error("请先保存字幕、样式和投稿资料草稿，再修改范围");
@@ -1099,7 +1109,8 @@ function drawManualWorkbench() {
         source_start: rangePoint("review-start", s?.source_start),
         source_end: rangePoint("review-end", s?.source_end),
         title: document.getElementById("review-title").value,
-        note: document.getElementById("review-note").value,
+        note: rangeReason ?? document.getElementById("review-note").value,
+        uncertain: rangeReason === undefined && document.getElementById('review-points-uncertain').checked,
         ...(update
           ? { segment_id: s.segment_id, expected_revision: s.revision }
           : {}),
@@ -1135,12 +1146,11 @@ function drawManualWorkbench() {
     if (rangeDraft) {
       document.getElementById("review-start").value = rangeDraft.start;
       document.getElementById("review-end").value = rangeDraft.end;
+      document.getElementById('review-range-reason').value = rangeDraft.reason || '';
       rangeChanged();
     }
     document.getElementById("review-range-save").onclick = () => {
-      const note = document.getElementById("review-note");
-      if (!note.value.trim()) note.value = s.quality_reason || "人工调整当前片段范围";
-      points(true);
+      points(true, document.getElementById('review-range-reason').value);
     };
   }
   document.querySelectorAll("button.candidate-card[data-segment]").forEach(
@@ -1171,11 +1181,30 @@ function drawManualWorkbench() {
     event.currentTarget.disabled = true;
     reviewMessage("正在保存保留决定…");
     try {
-      await mutateReview(`/api/segments/${s.segment_id}/keep`, {expected_revision: s.revision});
+      await mutateReview(`/api/segments/${s.segment_id}/keep`, {expected_revision: s.revision, ...editorialInput()});
+      clearEditorialDraft(s);
       await advanceCandidate();
     } catch (error) { if (stillHere()) { updateReviewActions(); reviewMessage(`保留未保存：${error.message}`); } }
   };
   const styleEditor = document.getElementById("review-style");
+  document.getElementById('content-panel').insertAdjacentHTML('beforeend', `<div id="review-editorial-history">${editorialHistoryHTML(s)}</div>`);
+  for (const id of ['review-human-reason', 'review-human-uncertain']) document.getElementById(id).oninput = () => {
+    try {
+      localStorage.setItem(editorialDraftKey(s), JSON.stringify({revision: s.revision, ...editorialInput()}));
+      setMessage('editorial-feedback-status', '备注尚未保存，保留时一起保存，也可单独保存。');
+    } catch { setMessage('editorial-feedback-status', '浏览器草稿不可用，请先保存备注。'); }
+  };
+  document.getElementById('review-feedback-save').onclick = async event => {
+    event.currentTarget.disabled = true;
+    try {
+      const saved = await mutateReview(`/api/segments/${s.segment_id}/feedback`, {expected_revision: s.revision, ...editorialInput()});
+      Object.assign(s, saved);
+      clearEditorialDraft(s);
+      document.getElementById('review-editorial-history').innerHTML = editorialHistoryHTML(s);
+      setMessage('editorial-feedback-status', '取舍备注已保存。');
+    } catch (error) { if (stillHere()) setMessage('editorial-feedback-status', `保存失败：${error.message}`); }
+    finally { if (stillHere()) updateReviewActions(); }
+  };
   document.getElementById('review-style-default').onclick = async () => {
     try {
       if (review.unsaved || review.styleUnsaved) throw new Error('请先保存字幕、样式和投稿资料草稿');
@@ -1277,8 +1306,6 @@ function drawManualWorkbench() {
         setRangePoint("review-end", end);
         showDialog("points-dialog");
         document.getElementById("review-title").value = r.title;
-        document.getElementById("review-note").value =
-          r.quality_reason || "根据重新判断结果人工选择";
         reviewMessage("建议已填入草稿，尚未保存范围或授权发布");
       }),
   );
@@ -1289,8 +1316,11 @@ function drawManualWorkbench() {
     try {
       await mutateReview(`/api/segments/${s.segment_id}/drop`, {
         expected_revision: s.revision,
-        reason: document.getElementById("review-drop-reason").value.trim() || "人工判断无需切片",
+        reason: document.getElementById("review-drop-reason").value.trim(),
+        kind: document.getElementById('review-drop-kind').value,
+        uncertain: document.getElementById('review-drop-uncertain').checked,
       });
+      clearEditorialDraft(s);
       for (const key of [subtitleKey, styleKey, metadataDraftKey()]) localStorage.removeItem(key);
       await advanceCandidate();
     } catch (e) {
