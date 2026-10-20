@@ -549,15 +549,25 @@ function candidateNeedsReview(s) {
 }
 
 let analysisTimer;
+function candidateReturnedEmpty(c) {
+  return c.state === "empty" || (c.state === "review" &&
+    c.reason === "empty judgment requires manual review" &&
+    c.judgments?.length === 0 && c.timings?.judgment?.status === "done");
+}
+function candidateEmptyReason(c) {
+  return c.state === "empty" ? (c.reason && c.reason !== "MiMo returned empty clips" ? c.reason : "AI 未选出达标片段，未提供具体理由")
+    : "旧记录未保存具体理由";
+}
 function recordingAnalysisState(job = review.analysisJob, evidence = review.evidence, segments = review.analysisSegments || review.segments, worker = review.analysisWorker) {
   const e = evidence || {}, total = e.total || 0;
-  // Older running API processes do not yet return summary. Only count a complete page.
-  const summary = e.summary || (e.candidates?.length === total ? {
+  // Recount a complete page to support older API summaries without the empty outcome.
+  const summary = e.candidates?.length === total ? {
     completed: e.candidates.filter(c => c.state !== "processing").length,
     dropped: e.candidates.filter(c => c.state === "drop").length,
+    empty: e.candidates.filter(candidateReturnedEmpty).length,
     failed: e.candidates.filter(c => c.state === "failed" || c.judgments?.some(j => j.judge_status === "judge_failed")).length,
-    needs_review: e.candidates.filter(c => c.state === "review").length,
-  } : {});
+    needs_review: e.candidates.filter(c => c.state === "review" && !candidateReturnedEmpty(c)).length,
+  } : e.summary || {};
   const status = job?.status || e.status;
   const count = segments.filter(s => s.state !== "dropped").length;
   const stageFailures = (e.segments || []).filter(s => s.error || Object.values(s.timings || {}).some(t => t.status === "failed")).length;
@@ -593,10 +603,16 @@ function recordingAnalysisState(job = review.analysisJob, evidence = review.evid
   if (job?.result?.cancelled || e.skipped) return {title: job?.result?.cancelled ? "AI 分析已取消" : "本场分析已跳过", detail: e.skip_reason === "below min_source_size_mb" ? "源文件小于配置的分析门槛，未进行 AI 判断。可手动补选片段。" : "本场未完成 AI 分析，可重新提交或手动补选片段。", tone: "muted", empty: "尚无待审核片段，可重新分析或手动补选。"};
   if (status === "failed") return {title: "AI 分析失败", detail: `${job?.result?.error || e.error || "处理未能完成，请查看分析证据。"} 可重试或手动补选片段。`, tone: "error", empty: "分析失败，不能据此判断本场没有值得切的片段。"};
   if (status === "done") {
-    if (summary.failed || summary.needs_review || stageFailures) return {title: "AI 分析结束，仍需人工检查", detail: `当前 ${count} 个待审核片段；${summary.failed || 0} 个候选处理失败，${summary.needs_review || 0} 个候选需人工检查${stageFailures ? `，${stageFailures} 个片段在字幕 / 成片阶段失败` : ""}${timing}。查看分析证据或手动补选。`, tone: "warning", empty: "部分候选或片段未能完成处理，不能据此判断本场没有值得切的片段。"};
+    const emptyDetail = summary.empty ? `；${summary.empty} 个候选 AI 返回空结果，未选出达标片段` : "";
+    if (summary.empty && !summary.failed && !summary.needs_review && !stageFailures && summary.empty + (summary.dropped || 0) === total) return {
+      title: "分析完成，AI 未选出达标片段",
+      detail: `已分析 ${total} 个召回区间，${summary.empty} 个返回空结果${summary.dropped ? `，${summary.dropped} 个明确建议不保留` : ""}${timing}。${(e.candidates || []).some(c => candidateReturnedEmpty(c) && c.state !== "empty") ? "旧记录未保存具体理由。" : ""}可展开分析证据查看各候选结果，也可手动补选。`,
+      tone: "muted", empty: "AI 返回空结果，未选出达标片段，因此没有生成片段。可查看分析证据或手动补选。",
+    };
+    if (summary.failed || summary.needs_review || stageFailures) return {title: "AI 分析结束，仍需人工检查", detail: `当前 ${count} 个待审核片段；${summary.failed || 0} 个候选处理失败，${summary.needs_review || 0} 个候选需人工检查${emptyDetail}${stageFailures ? `，${stageFailures} 个片段在字幕 / 成片阶段失败` : ""}${timing}。查看分析证据或手动补选。`, tone: "warning", empty: "部分候选或片段未能完成处理，不能据此判断本场没有值得切的片段。"};
     if (!total) return {title: "分析完成，未召回候选区间", detail: `弹幕召回没有找到候选区间${timing}。可手动补选片段；这不代表 AI 看完了整场并判定无可保留内容。`, tone: "muted", empty: "本次未召回候选区间，可手动补选源区间创建片段。"};
     if (summary.dropped === total) return {title: "分析完成，AI 未建议保留片段", detail: `已检查 ${total} 个召回区间，AI 均建议不保留${timing}。仍可查看分析证据并手动补选。`, tone: "muted", empty: "本次召回的候选均被 AI 建议不保留，可人工检查或补选。"};
-    return {title: `AI 分析完成 · ${count} 个片段可审核`, detail: `已处理 ${total} 个召回区间${timing}。请选择片段检查内容、字幕和成片。`, tone: "success", empty: "分析已结束，当前没有可审核片段。可查看分析证据或手动补选。"};
+    return {title: `AI 分析完成 · ${count} 个片段可审核`, detail: `已处理 ${total} 个召回区间${emptyDetail}${timing}。请选择片段检查内容、字幕和成片。`, tone: "success", empty: "分析已结束，当前没有可审核片段。可查看分析证据或手动补选。"};
   }
   return {title: "本场尚未进行 AI 分析", detail: "点击“AI 分析本场录播”开始，也可手动补选源区间创建片段。", tone: "muted", empty: "尚未分析。可点击“AI 分析本场录播”，或手动补选片段。"};
 }
@@ -752,7 +768,7 @@ function arrangeReviewWorkbench() {
 function reviewEvidenceHTML() {
   const e = review.evidence;
   if (!e) return '<p class="muted">暂无分析证据</p>';
-  return `<details id="recording-evidence" ${review.evidenceOpen ? "open" : ""}><summary>分析证据与占用 · 源 ${bytesLabel(e.source_size)} · 本场 ${bytesLabel(e.related_files_size)}</summary><p>分析记录：${htmlEscape(e.history_available ? e.status : "尚无")} ${htmlEscape(e.error || e.skip_reason || "")}</p><table class="list"><thead><tr><th>候选源区间</th><th>弹幕数 / 峰值 / 突增倍数</th><th>阶段 / 失败</th></tr></thead><tbody>${e.candidates.map((c, i) => `<tr><td><button class="text-button" data-candidate-seek="${i}">${timecode(c.start)}–${timecode(c.end)}</button></td><td>${htmlEscape(c.danmaku_count ?? "—")} / ${htmlEscape(c.peak_density ?? "—")} / ${htmlEscape(c.burst_ratio ?? "—")}</td><td>${htmlEscape(c.state)} ${htmlEscape(c.reason || c.error || "")}<p>${stageTimings(c.timings)}</p></td></tr>`).join("") || '<tr><td colspan="3">没有已保存候选</td></tr>'}</tbody></table><div class="action-row"><button class="btn btn-secondary btn-sm" id="evidence-prev" ${review.evidenceOffset === 0 ? "disabled" : ""}>上一页候选</button><span>共 ${e.total} 个</span><button class="btn btn-secondary btn-sm" id="evidence-next" ${review.evidenceOffset + 20 >= e.total ? "disabled" : ""}>下一页候选</button></div>${e.segments.map((v) => `<details><summary>${htmlEscape(v.title)} · ${htmlEscape(v.stage || v.state)} ${htmlEscape(v.error_detail || v.error || "")}</summary><p>${stageTimings(v.timings)}</p><ul>${v.artifacts.map((a) => `<li>${htmlEscape(a.name)} · ${bytesLabel(a.size)}</li>`).join("") || "<li>尚无片段工件</li>"}</ul></details>`).join("")}</details>`;
+  return `<details id="recording-evidence" ${review.evidenceOpen ? "open" : ""}><summary>分析证据与占用 · 源 ${bytesLabel(e.source_size)} · 本场 ${bytesLabel(e.related_files_size)}</summary><p>分析记录：${htmlEscape(e.history_available ? e.status : "尚无")} ${htmlEscape(e.error || e.skip_reason || "")}</p><table class="list"><thead><tr><th>候选源区间</th><th>弹幕数 / 峰值 / 突增倍数</th><th>阶段 / 失败</th></tr></thead><tbody>${e.candidates.map((c, i) => `<tr><td><button class="text-button" data-candidate-seek="${i}">${timecode(c.start)}–${timecode(c.end)}</button></td><td>${htmlEscape(c.danmaku_count ?? "—")} / ${htmlEscape(c.peak_density ?? "—")} / ${htmlEscape(c.burst_ratio ?? "—")}</td><td>${htmlEscape(candidateReturnedEmpty(c) ? "AI 返回空结果，未选出达标片段" : c.state)} ${htmlEscape(candidateReturnedEmpty(c) ? candidateEmptyReason(c) : c.reason || c.error || "")}<p>${stageTimings(c.timings)}</p></td></tr>`).join("") || '<tr><td colspan="3">没有已保存候选</td></tr>'}</tbody></table><div class="action-row"><button class="btn btn-secondary btn-sm" id="evidence-prev" ${review.evidenceOffset === 0 ? "disabled" : ""}>上一页候选</button><span>共 ${e.total} 个</span><button class="btn btn-secondary btn-sm" id="evidence-next" ${review.evidenceOffset + 20 >= e.total ? "disabled" : ""}>下一页候选</button></div>${e.segments.map((v) => `<details><summary>${htmlEscape(v.title)} · ${htmlEscape(v.stage || v.state)} ${htmlEscape(v.error_detail || v.error || "")}</summary><p>${stageTimings(v.timings)}</p><ul>${v.artifacts.map((a) => `<li>${htmlEscape(a.name)} · ${bytesLabel(a.size)}</li>`).join("") || "<li>尚无片段工件</li>"}</ul></details>`).join("")}</details>`;
 }
 function reviewMarkup(s, task, lines, initial) {
   const name = task ? sourceTitle(task.source_relpath) : "选择场次";

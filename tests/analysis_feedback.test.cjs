@@ -71,3 +71,35 @@ test('completed AI judgment does not hide subtitle or rendering failure', () => 
   assert.match(result.title, /人工检查/);
   assert.match(result.detail, /1 个片段在字幕 \/ 成片阶段失败/);
 });
+
+test('model empty results and legacy records explicitly explain why no segment exists', () => {
+  for (const candidate of [
+    {state:'empty',reason:'没有独立完整事件'},
+    {state:'review',reason:'empty judgment requires manual review',judgments:[],timings:{judgment:{status:'done'}}},
+  ]) {
+    // The complete candidate page also works with the older running API summary.
+    const evidence = {total:1,candidates:[candidate],summary:{needs_review:1}};
+    const result = state({status:'done'}, evidence);
+    assert.match(result.title, /AI 未选出达标片段/);
+    assert.match(result.empty, /AI 返回空结果/);
+    assert.doesNotMatch(result.title, /人工检查|失败/);
+    if (candidate.state === 'review') assert.match(result.detail, /旧记录未保存具体理由/);
+    context.evidence = {...evidence,segments:[]};
+    const html = vm.runInContext('review.evidence = evidence; reviewEvidenceHTML()', context);
+    assert.match(html, /AI 返回空结果，未选出达标片段/);
+    assert.match(html, candidate.state === 'empty' ? /没有独立完整事件/ : /旧记录未保存具体理由/);
+    assert.doesNotMatch(html, /empty judgment requires manual review/);
+  }
+});
+
+test('empty outcomes do not conceal genuine failures or unresolved empty responses', () => {
+  const mixed = state({status:'done'}, {total:3,summary:{empty:2,failed:1}});
+  assert.match(mixed.title, /人工检查/);
+  assert.match(mixed.detail, /1 个候选处理失败/);
+  assert.match(mixed.detail, /2 个候选 AI 返回空结果/);
+  assert.match(state({status:'done'}, {total:1,candidates:[
+    {state:'review',reason:'empty judgment requires manual review',judgments:[]},
+  ]}).title, /人工检查/);
+  assert.match(state({status:'done'}, {total:1,summary:{empty:1},
+    segments:[{error:'render failed'}]}).title, /人工检查/);
+});

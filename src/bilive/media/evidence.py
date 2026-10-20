@@ -4,6 +4,14 @@ from pathlib import Path
 from bilive.domain.models import source_relpath_from_task_id
 
 
+def candidate_returned_empty(candidate):
+    return candidate.get('state') == 'empty' or (
+        candidate.get('state') == 'review'
+        and candidate.get('reason') == 'empty judgment requires manual review'
+        and candidate.get('judgments') == []
+        and candidate.get('timings', {}).get('judgment', {}).get('status') == 'done')
+
+
 def recording_evidence(wb,task,limit=20,offset=0):
     rel=source_relpath_from_task_id(task);source=wb.source(rel)
     history_path=source.with_suffix('.mp4.task.json')
@@ -13,9 +21,10 @@ def recording_evidence(wb,task,limit=20,offset=0):
     summary = {
         'completed': sum(c.get('state') != 'processing' for c in candidates),
         'dropped': sum(c.get('state') == 'drop' for c in candidates),
+        'empty': sum(candidate_returned_empty(c) for c in candidates),
         'failed': sum(c.get('state') == 'failed' or any(
             j.get('judge_status') == 'judge_failed' for j in c.get('judgments', [])) for c in candidates),
-        'needs_review': sum(c.get('state') == 'review' for c in candidates),
+        'needs_review': sum(c.get('state') == 'review' and not candidate_returned_empty(c) for c in candidates),
     }
     files=set()
     for suffix in ('.mp4','.flv','.xml','.flv.meta','.flv.meta.json','.json','.ass','.mp4.task.json',

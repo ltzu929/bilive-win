@@ -237,7 +237,12 @@ class AnalysisPipeline:
             else:
                 try:
                     if not results:
-                        entry.update(state='review', reason='empty judgment requires manual review')
+                        raw = getattr(results, 'raw_response', None)
+                        if raw:
+                            entry.update(state='empty', reason=getattr(results, 'empty_reason', '') or 'AI 未选出达标片段',
+                                         raw_model_response=raw)
+                        else:
+                            entry.update(state='review', reason='empty judgment requires manual review')
                     for result in sorted(results, key=lambda r:not (r.judge_status == 'keep' and r.retain_recommendation)):
                         self._result(result, source_relpath, source, event, candidate, entry, history,
                                      prepared_result.get('transcript'), duration)

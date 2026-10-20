@@ -400,6 +400,20 @@ def test_empty_result_is_not_drop(setup):
     assert list(setup[1].artifacts.glob("candidates/*/*.mp4"))
 
 
+def test_model_empty_response_saves_reason_and_raw_evidence_without_manual_review(setup):
+    import json
+    from bilive.vendor.autoslice.mllm_sdk.mimo_video import _analysis_list_from_mimo_dict
+    response = {'clips': [], 'empty_reason': '没有可独立成片的内容'}
+    results = _analysis_list_from_mimo_dict(response, artist='主播', model='offline-fixture')
+    out = run(setup, lambda **kw: results)
+    history = json.loads((setup[1].videos / 'session.mp4.task.json').read_text(encoding='utf-8'))
+    assert out['segments'] == [] and not out['requires_source_review']
+    assert history['candidates'][0]['state'] == 'empty'
+    assert history['candidates'][0]['reason'] == response['empty_reason']
+    assert history['candidates'][0]['raw_model_response'] == response
+    assert list(setup[1].artifacts.glob('candidates/*/*.mp4'))
+
+
 def test_formal_asr_failure_keeps_candidate_and_review_record(setup):
     setup[0].analysis.pre_judge_asr = False
     out = run(setup, lambda **kw:[result()], lambda video, **window:{"segments":[]})

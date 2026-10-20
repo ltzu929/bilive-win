@@ -16,7 +16,23 @@ def test_evidence_summary_counts_all_pages_and_distinguishes_judgment_failure(en
     evidence = recording_evidence(wb, task, limit=1, offset=4)
     assert evidence['candidates'] == [{'state': 'processing'}]
     assert evidence['total'] == 6
-    assert evidence['summary'] == {'completed': 5, 'dropped': 1, 'failed': 2, 'needs_review': 1}
+    assert evidence['summary'] == {'completed': 5, 'dropped': 1, 'empty': 0, 'failed': 2, 'needs_review': 1}
+    assert history.read_bytes() == before
+
+
+def test_empty_results_and_legacy_empty_records_are_not_failures_or_pending_review(env):
+    wb, _, task = env
+    history = wb.videos / 'session.mp4.task.json'
+    history.write_text(json.dumps({'status': 'done', 'candidates': [
+        {'state': 'empty', 'reason': '没有达标片段', 'raw_model_response': {'clips': []}},
+        {'state': 'review', 'reason': 'empty judgment requires manual review', 'judgments': [],
+         'timings': {'judgment': {'status': 'done'}}},
+        {'state': 'review', 'reason': 'empty judgment requires manual review', 'judgments': []},
+        {'state': 'failed'},
+    ]}), encoding='utf-8')
+    before = history.read_bytes()
+    evidence = recording_evidence(wb, task, limit=1, offset=3)
+    assert evidence['summary'] == {'completed': 4, 'dropped': 0, 'empty': 2, 'failed': 1, 'needs_review': 1}
     assert history.read_bytes() == before
 
 
