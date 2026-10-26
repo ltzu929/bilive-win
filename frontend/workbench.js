@@ -10,6 +10,7 @@ const review = {
   media: "source",
   unsaved: false,
   styleUnsaved: false,
+  savingSubtitles: false,
   rangeUnsaved: false,
   largePlayer: false,
   pickerCollapsed: false,
@@ -255,6 +256,31 @@ function collectReviewLines(raw = false) {
       : {}),
   }));
 }
+async function saveReviewSubtitles(s, mutateReview) {
+  const subtitleKey = draftKey(), styleKey = styleDraftKey();
+  const saveStyle = review.styleUnsaved;
+  const style = saveStyle ? JSON.parse(document.getElementById("review-style").value) : null;
+  if (review.unsaved || s.subtitles_revision !== s.revision || !s.subtitles?.length) {
+    const lines = collectReviewLines();
+    const saved = await mutateReview("/api/subtitles/save", {
+      segment_id: s.segment_id,
+      expected_revision: s.revision,
+      duration: s.source_end - s.source_start,
+      lines,
+    });
+    Object.assign(s, saved, {subtitles: lines, final_valid: false});
+    review.unsaved = false;
+    localStorage.removeItem(subtitleKey);
+  }
+  if (saveStyle) {
+    const saved = await mutateReview(`/api/segments/${s.segment_id}/style`, {
+      expected_revision: s.revision, style,
+    });
+    Object.assign(s, saved, {final_valid: false});
+    review.styleUnsaved = false;
+    localStorage.removeItem(styleKey);
+  }
+}
 function writeReviewDraft() {
   if (!review.segment) return;
   document.querySelectorAll("#review-lines tr").forEach((row, index) => {
@@ -438,7 +464,8 @@ function updateReviewActions() {
     return;
   }
   const dirty = review.unsaved || review.styleUnsaved || review.rangeUnsaved;
-  const locked = s.publish_approval || s.active_job || s.state === "dropped";
+  const draftNames = [review.unsaved && "字幕", review.styleUnsaved && "样式", review.rangeUnsaved && "范围"].filter(Boolean).join("、");
+  const locked = s.publish_approval || s.active_job || s.state === "dropped" || review.savingSubtitles;
   for (const id of ['review-human-reason', 'review-human-uncertain', 'review-feedback-save']) {
     const control = document.getElementById(id);
     if (control) control.disabled = !!(locked || review.lifecycle?.review_state === 'review_complete');
@@ -468,7 +495,11 @@ function updateReviewActions() {
   for (const id of ["review-start", "review-end", "review-in", "review-out"])
     document.getElementById(id).disabled = !!locked;
   const save = document.getElementById("review-save");
-  if (save) save.disabled = !!(locked || !document.querySelector("#review-lines tr"));
+  if (save) {
+    save.disabled = !!(locked || !document.querySelector("#review-lines tr") || subtitleReady && !review.unsaved && !review.styleUnsaved);
+    save.textContent = review.savingSubtitles ? "保存中…" : review.styleUnsaved
+      ? review.unsaved ? "保存字幕和样式" : "保存字幕样式" : "保存字幕";
+  }
   const transcribe = document.getElementById("review-transcribe");
   if (transcribe) {
     transcribe.disabled = !!(dirty || locked);
@@ -483,7 +514,7 @@ function updateReviewActions() {
   if (applyStyle) applyStyle.disabled = !!(locked || !review.styleUnsaved);
   const badge = document.getElementById("review-draft-badge");
   if (badge) {
-    badge.textContent = s.state === "dropped" ? "已废弃" : dirty ? "草稿未保存" : subtitleReady ? "已保存" : "字幕待补充 / 确认";
+    badge.textContent = s.state === "dropped" ? "已废弃" : dirty ? `${draftNames}未保存` : subtitleReady ? "已保存" : "字幕待补充 / 确认";
     badge.className = `badge ${s.state === "dropped" ? "muted" : dirty || !subtitleReady ? "orange" : "muted"}`;
   }
   setMessage(
@@ -497,7 +528,7 @@ function updateReviewActions() {
         : review.rangeUnsaved
           ? "入出点尚未保存，请先保存当前范围"
         : dirty
-          ? "先保存当前字幕和样式，再生成成片"
+          ? `先保存${draftNames}，再生成成片`
           : !subtitleReady
             ? "先补充并保存当前片段字幕，再生成成片"
             : !s.final_valid
@@ -512,16 +543,18 @@ function updateReviewActions() {
   setMessage("context-save", s.state === "dropped" ? "当前片段已废弃"
     : s.publish_approval ? "已批准发布，当前成片受保护"
     : s.active_job ? `${actionLabels[s.active_job.action] || "后台任务"}：${reviewJobStates[s.active_job.status] || s.active_job.status}。完成后可继续。`
+    : review.savingSubtitles ? "正在保存字幕，请稍候…"
     : review.rangeUnsaved ? `新范围 ${document.getElementById("review-start").value} – ${document.getElementById("review-end").value} 尚未保存，请点击“保存当前范围”。`
-    : dirty ? "有未保存草稿，请先保存。当前没有后台任务。"
+    : review.unsaved ? `字幕${review.styleUnsaved ? "和样式" : ""}尚未保存，请点击“${save.textContent}”。`
+    : review.styleUnsaved ? `字幕已保存，样式尚未保存，请点击“${save.textContent}”。`
     : !subtitleReady ? `${s.human_reviewed ? "已保留。" : ""}等待补充字幕：${review.tab === "subtitles" ? "识别或手动填写并保存" : "点击“检查字幕”，识别或手动填写并保存"}。当前没有后台任务。`
     : !s.final_valid ? "字幕已保存，等待生成成片：点击“生成成片”。当前没有后台任务。"
     : "成片已生成，预览确认后可进入投稿页。当前没有后台任务。");
   const next = document.getElementById("review-next-step");
   if (next) {
-    if (review.tab === "subtitles" && !subtitleReady) {
-      const action = review.unsaved ? save : transcribe;
-      next.textContent = review.unsaved ? "保存字幕" : "识别字幕";
+    if (review.tab === "subtitles" && (review.unsaved || review.styleUnsaved || !subtitleReady)) {
+      const action = review.unsaved || review.styleUnsaved ? save : transcribe;
+      next.textContent = action === save ? save.textContent : "识别字幕";
       next.disabled = !action || action.disabled || review.rangeUnsaved;
       next.onclick = () => action?.click();
     } else {
@@ -1412,20 +1445,22 @@ function drawManualWorkbench() {
     row.scrollIntoView({ block: "nearest" });
   };
   document.getElementById("review-save").onclick = async () => {
+    if (review.savingSubtitles) return;
+    const saveStyle = review.styleUnsaved;
+    review.savingSubtitles = true;
+    updateReviewActions();
     try {
-      const key = subtitleKey;
-      await mutateReview("/api/subtitles/save", {
-        segment_id: s.segment_id,
-        expected_revision: s.revision,
-        duration: s.source_end - s.source_start,
-        lines: collectReviewLines(),
-      });
-      localStorage.removeItem(key);
+      await saveReviewSubtitles(s, mutateReview);
+      review.savingSubtitles = false;
       await renderManualWorkbench();
-      reviewMessage("字幕已保存，需要生成 / 重烧成片");
+      reviewMessage(`${saveStyle ? "字幕和样式" : "字幕"}已保存，需要生成 / 重烧成片`);
     } catch (e) {
       if (!stillHere()) return;
-      reviewMessage(`保存失败：${e.message}。草稿保留。`);
+      reviewMessage(`${!review.unsaved && review.styleUnsaved ? "字幕已保存，样式保存失败" : "保存失败"}：${e.message}。未保存的草稿保留。`);
+    } finally {
+      review.savingSubtitles = false;
+      if (pageKey() === "library" && document.getElementById("review-source")?.dataset.segment === review.segment?.segment_id)
+        updateReviewActions();
     }
   };
   const submit = async (action) => {
