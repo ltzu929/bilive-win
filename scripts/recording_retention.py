@@ -1,4 +1,4 @@
-"""Daily source retention: persist warnings and enqueue expiry; never drain jobs."""
+"""Daily media retention: expire clips and enqueue source recycling."""
 from pathlib import Path
 import os
 import json
@@ -9,6 +9,7 @@ from bilive.media.workbench import Workbench
 from bilive.media.subtitle_store import SubtitleStore
 from bilive.upload.queue import UploadQueue
 from bilive.lifecycle.review import SourceReview
+from bilive.lifecycle.clip_retention import cleanup_clips
 
 
 def main():
@@ -21,7 +22,10 @@ def main():
                    UploadQueue(settings.paths.db_path or Path('src/db/data.db')))
     from bilive.lifecycle.runtime import configure_workbench
     configure_workbench(wb, settings.paths.config_path)
+    # Clean completed outputs before source recycling creates active jobs.
+    clips = cleanup_clips(wb)
     results = SourceReview(wb).maintenance()
+    results.extend(clips)
     print(json.dumps(results, ensure_ascii=False, indent=2))
     if any(row.get('queued') for row in results):
         from bilive.worker.control import WorkerControl

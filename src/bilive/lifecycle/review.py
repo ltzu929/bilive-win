@@ -24,11 +24,24 @@ class SourceReview:
         path = self.root / f"{validate_id(task)}.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
 
+    def source(self, rel: str) -> Path:
+        """Use the MP4 identity for an unfinished FLV recording package too."""
+        if Path(rel).suffix.lower() != '.mp4':
+            raise ValueError('source package requires an MP4 identity')
+        try:
+            return self.wb.source(rel)
+        except FileNotFoundError:
+            flv = (self.wb.videos / rel).with_suffix('.flv')
+            if (flv.is_file() and not flv.is_symlink() and
+                    flv.resolve().is_relative_to(self.wb.videos)):
+                return flv.resolve()
+            raise
+
     def view(self, task: str) -> dict:
         rel = source_relpath_from_task_id(validate_id(task))
         record = self.load(task)
         if record is None:
-            source = self.wb.source(rel)
+            source = self.source(rel)
             started = _parse_time_from_name(rel)
             record = dict(task_id=task, source_relpath=rel,
                           retention_started_at=started if started is not None else source.stat().st_mtime,
@@ -51,8 +64,9 @@ class SourceReview:
         record = self.load(task)
         if record:
             return record
-        source = self.wb.source(rel)
-        now = source.stat().st_mtime if now is None else now
+        source = self.source(rel)
+        # Discovering an old unfinished FLV must not restart its retention window.
+        now = source.stat().st_mtime if now is None or source.suffix.lower() == '.flv' else now
         started = _parse_time_from_name(rel)
         started = now if started is None else started
         record = dict(task_id=task, source_relpath=rel, retention_started_at=started,
@@ -219,10 +233,15 @@ class SourceReview:
         now = time.time() if now is None else now
         results = []
         protected = self.protected()
-        for source in sorted(self.wb.videos.rglob('*.mp4')):
-            if source.resolve() in protected:
+        sources = {p.relative_to(self.wb.videos).as_posix()
+                   for p in self.wb.videos.rglob('*.mp4')}
+        sources.update(p.with_suffix('.mp4').relative_to(self.wb.videos).as_posix()
+                       for p in self.wb.videos.rglob('*.flv')
+                       if not p.is_symlink() and p.resolve().is_relative_to(self.wb.videos))
+        for rel in sorted(sources):
+            source = self.wb.videos / rel
+            if any(source.with_suffix(suffix).resolve() in protected for suffix in ('.mp4', '.flv')):
                 continue
-            rel = source.relative_to(self.wb.videos).as_posix()
             with self.wb.lock():
                 record = self.ensure(rel, now)
                 self.refresh_deadline(record)
@@ -289,7 +308,8 @@ class SourceReview:
         return path
 
     def manifest(self, rel, task):
-        source = self.wb.source(rel)
+        self.source(rel)  # Require an existing MP4 or unfinished FLV package.
+        source = (self.wb.videos / rel).resolve()
         paths = [source, source.with_suffix('.flv')]
         paths += [source.with_suffix(suffix) for suffix in
                   ('.xml', '.flv.meta', '.flv.meta.json', '.json', '.ass', '.mp4.task.json',

@@ -68,7 +68,7 @@ poll_interval = 10
 max_attempts = 3
 retry_base = 30
 auth_retry = 120
-delete_after_success = true
+delete_after_success = false
 
 [dashboard]
 # 允许的额外请求 Host，修改后重启；不放宽同源写入规则。
@@ -80,7 +80,7 @@ description = ""
 tags = []
 
 [retention]
-# 新策略先保存为关闭；从设置页启用后才自动执行，避免部署即回收历史源。
+# 模板默认关闭；本机运行配置已单独启用。录播与切片统一保留 5 天。
 enabled = false
 unprocessed_days = 5
-published_hours = 24
+published_hours = 120
