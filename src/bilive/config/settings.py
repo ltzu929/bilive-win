@@ -76,7 +76,8 @@ class SubtitleConfig:
     asr_compute_type: str = "float16"
     asr_batch: int = 2
     asr_cpu_threads: int = 2
-    asr_vad: bool = True
+    # Laughing/quiet speech in retained clips is sometimes rejected by Silero.
+    asr_vad: bool = False
     padding: float = 6.0
     snap_tolerance: float = 3.0
     snap_enabled: bool = True

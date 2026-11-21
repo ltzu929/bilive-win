@@ -249,9 +249,11 @@ def transcribe_audio_whisper(
                 "vad_parameters": vad_parameters if vad_filter else None,
                 "without_timestamps": False,
                 "word_timestamps": True,
+                "condition_on_previous_text": False,
             }
-            if hotwords:
-                transcription_options["hotwords"] = hotwords
+            # Keep hotwords as a legacy argument. Decoder hints can replace real
+            # speech with unrelated text even in sequential mode (2026-10-28).
+            # Profile names still reach the separate text-only correction step.
             mode = "sequential"
             transcribe_started = time.perf_counter()
             segment_iter, info = _whisper_model.transcribe(

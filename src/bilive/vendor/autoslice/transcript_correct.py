@@ -7,8 +7,11 @@ Correction never changes timestamps and never invents new cue lines.
 
 from __future__ import annotations
 
+import base64
+from difflib import SequenceMatcher
 import json
 import os
+from pathlib import Path
 from typing import Any, Callable
 
 from openai import OpenAI
@@ -18,14 +21,15 @@ from bilive.vendor.config import MIMO_BASE_URL, MIMO_MODEL, MIMO_TIMEOUT
 from bilive.vendor.log.logger import scan_log
 
 
-def _compact_lines(segments: list[TranscriptSegment], *, max_chars: int = 6000) -> str:
+def _compact_lines(segments: list[TranscriptSegment], *, max_chars: int = 6000, timed: bool = False) -> str:
     lines: list[str] = []
     used = 0
     for index, segment in enumerate(segments):
         text = str(segment.text or "").strip()
         if not text:
             continue
-        line = f"{index}\t{text}"
+        timing = f"[{segment.start:.2f}-{segment.end:.2f}s] " if timed else ""
+        line = f"{index}\t{timing}{text}"
         if used + len(line) + 1 > max_chars:
             break
         lines.append(line)
@@ -40,13 +44,17 @@ def _build_correct_prompt(
     title: str = "",
     context: str = "",
     hotwords: list[str] | None = None,
+    with_audio: bool = False,
 ) -> str:
-    body = _compact_lines(segments)
+    body = _compact_lines(segments, timed=with_audio)
     context_text = str(context or "").strip()
     if len(context_text) > 800:
         context_text = context_text[:797] + "..."
     return (
         "你是直播字幕校对员。下面 ASR 字幕可能把主播名、游戏名、梗名或同音字听错。\n"
+        + ("附带原音频与字幕对应，从 0 秒开始。请实际复听音频核对专名；"
+           "方括号是每行对应的音频时间。只修改名单中专名的错写，保留其他字词。\n" if with_audio else "")
+        +
         f"主播: {artist or 'unknown'}\n"
         f"标题线索: {title or '(none)'}\n"
         f"弹幕关键词线索: {context_text or '(none)'}\n\n"
@@ -61,6 +69,25 @@ def _build_correct_prompt(
         "字幕:\n"
         f"{body}"
     )
+
+
+def _keep_name_edits(original: str, proposed: str, hotwords: list[str]) -> str:
+    """Apply separable name edits while retaining all surrounding ASR text."""
+    spans = []
+    for name in dict.fromkeys(hotwords):
+        if not name:
+            continue
+        offset = 0
+        while (start := proposed.find(name, offset)) >= 0:
+            spans.append((start, start + len(name)))
+            offset = start + len(name)
+    parts = []
+    for tag, a, b, c, d in SequenceMatcher(None, original, proposed, autojunk=False).get_opcodes():
+        if tag != 'equal' and c < d and any(start <= c and d <= end for start, end in spans):
+            parts.append(proposed[c:d])
+        else:
+            parts.append(original[a:b])
+    return ''.join(parts)
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -82,6 +109,7 @@ def correct_transcript_segments(
     title: str = "",
     context: str = "",
     hotwords: list[str] | None = None,
+    audio_path: str | Path | None = None,
     model: str = MIMO_MODEL,
     base_url: str = MIMO_BASE_URL,
     timeout: float = MIMO_TIMEOUT,
@@ -98,6 +126,17 @@ def correct_transcript_segments(
         return list(segments)
 
     try:
+        prompt = _build_correct_prompt(usable, artist=artist, title=title, context=context,
+                                       hotwords=hotwords, with_audio=audio_path is not None)
+        content: Any = prompt
+        if audio_path is not None:
+            audio = Path(audio_path)
+            # Base64 adds a third; the provider accepts at most 50 MB encoded.
+            if audio.stat().st_size > 37_000_000:
+                raise ValueError('subtitle correction audio exceeds provider limit')
+            encoded = base64.b64encode(audio.read_bytes()).decode('ascii')
+            content = [{'type': 'input_audio', 'input_audio': {'data': 'data:audio/wav;base64,' + encoded}},
+                       {'type': 'text', 'text': prompt}]
         client = client_factory(api_key=api_key, base_url=base_url)
         completion = client.chat.completions.create(
             model=model,
@@ -111,13 +150,7 @@ def correct_transcript_segments(
                 },
                 {
                     "role": "user",
-                    "content": _build_correct_prompt(
-                        usable,
-                        artist=artist,
-                        title=title,
-                        context=context,
-                        hotwords=hotwords,
-                    ),
+                    "content": content,
                 },
             ],
             max_completion_tokens=2048,
@@ -165,6 +198,8 @@ def correct_transcript_segments(
         if not text or compact_index not in index_map:
             continue
         original_index = index_map[compact_index]
+        if audio_path is not None and hotwords:
+            text = _keep_name_edits(segments[original_index].text, text, hotwords)
         if text != corrected[original_index].text:
             corrected[original_index] = TranscriptSegment(
                 start=corrected[original_index].start,

@@ -52,7 +52,7 @@ asr_compute_type = "float16"
 # Leave resources for interactive desktop use; smaller batches reduce VRAM peaks.
 asr_batch = 2
 asr_cpu_threads = 2
-asr_vad = true
+asr_vad = false
 padding = 6.0
 snap_tolerance = 3.0
 light_correct = true

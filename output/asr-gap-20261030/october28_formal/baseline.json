@@ -1,0 +1,494 @@
+{
+  "sample": "october28_formal",
+  "source": "8792912 - 咩栗/blive_8792912_2026-10-28-182633.mp4",
+  "origin": 9110.43,
+  "options": {
+    "hotwords": "咩栗, 咩栗羊, 小棉花"
+  },
+  "elapsed_seconds": 6.05,
+  "info": {
+    "language": "zh",
+    "language_probability": 1,
+    "duration": 53.69,
+    "duration_after_vad": 50.138,
+    "all_language_probs": null,
+    "transcription_options": {
+      "beam_size": 5,
+      "best_of": 5,
+      "patience": 1,
+      "length_penalty": 1,
+      "repetition_penalty": 1,
+      "no_repeat_ngram_size": 0,
+      "log_prob_threshold": -1.0,
+      "no_speech_threshold": 0.6,
+      "compression_ratio_threshold": 2.4,
+      "condition_on_previous_text": true,
+      "prompt_reset_on_temperature": 0.5,
+      "temperatures": [
+        0.0,
+        0.2,
+        0.4,
+        0.6,
+        0.8,
+        1.0
+      ],
+      "initial_prompt": null,
+      "prefix": null,
+      "suppress_blank": true,
+      "suppress_tokens": [
+        1,
+        2,
+        7,
+        8,
+        9,
+        10,
+        14,
+        25,
+        26,
+        27,
+        28,
+        29,
+        31,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        90,
+        91,
+        92,
+        93,
+        359,
+        503,
+        522,
+        542,
+        873,
+        893,
+        902,
+        918,
+        922,
+        931,
+        1350,
+        1853,
+        1982,
+        2460,
+        2627,
+        3246,
+        3253,
+        3268,
+        3536,
+        3846,
+        3961,
+        4183,
+        4667,
+        6585,
+        6647,
+        7273,
+        9061,
+        9383,
+        10428,
+        10929,
+        11938,
+        12033,
+        12331,
+        12562,
+        13793,
+        14157,
+        14635,
+        15265,
+        15618,
+        16553,
+        16604,
+        18362,
+        18956,
+        20075,
+        21675,
+        22520,
+        26130,
+        26161,
+        26435,
+        28279,
+        29464,
+        31650,
+        32302,
+        32470,
+        36865,
+        42863,
+        47425,
+        49870,
+        50254,
+        50258,
+        50359,
+        50360,
+        50361,
+        50362,
+        50363
+      ],
+      "without_timestamps": false,
+      "max_initial_timestamp": 1.0,
+      "word_timestamps": true,
+      "prepend_punctuations": "\"'“¿([{-",
+      "append_punctuations": "\"'.。,，!！?？:：”)]}、",
+      "multilingual": false,
+      "max_new_tokens": null,
+      "clip_timestamps": [
+        0.0
+      ],
+      "hallucination_silence_threshold": null,
+      "hotwords": "咩栗, 咩栗羊, 小棉花"
+    },
+    "vad_options": {
+      "threshold": 0.5,
+      "neg_threshold": null,
+      "min_speech_duration_ms": 0,
+      "max_speech_duration_s": Infinity,
+      "min_silence_duration_ms": 2000,
+      "speech_pad_ms": 400
+    }
+  },
+  "segments": [
+    {
+      "id": 1,
+      "seek": 0,
+      "start": 15.72,
+      "end": 19.92,
+      "text": "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目",
+      "tokens": [
+        50365,
+        27908,
+        1960,
+        2392,
+        251,
+        12579,
+        5266,
+        252,
+        220,
+        7422,
+        95,
+        10034,
+        227,
+        220,
+        17819,
+        105,
+        28926,
+        220,
+        12467,
+        5266,
+        237,
+        35488,
+        11100,
+        12373,
+        250,
+        940,
+        236,
+        12579,
+        12579,
+        8987,
+        237,
+        11386,
+        51864
+      ],
+      "avg_logprob": -0.1359145189909374,
+      "compression_ratio": 0.8513513513513513,
+      "no_speech_prob": 0.018096923828125,
+      "words": [
+        {
+          "start": 15.72,
+          "end": 16.16,
+          "word": "请",
+          "probability": 0.051116943359375
+        },
+        {
+          "start": 16.16,
+          "end": 16.6,
+          "word": "不",
+          "probability": 0.986328125
+        },
+        {
+          "start": 16.6,
+          "end": 16.68,
+          "word": "吝",
+          "probability": 0.999755859375
+        },
+        {
+          "start": 16.68,
+          "end": 18.06,
+          "word": "点",
+          "probability": 1.0
+        },
+        {
+          "start": 18.06,
+          "end": 18.06,
+          "word": "赞",
+          "probability": 1.0
+        },
+        {
+          "start": 18.1,
+          "end": 18.42,
+          "word": " 订",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 18.42,
+          "end": 19.1,
+          "word": "阅",
+          "probability": 1.0
+        },
+        {
+          "start": 19.1,
+          "end": 19.1,
+          "word": " 转",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 19.1,
+          "end": 19.1,
+          "word": "发",
+          "probability": 0.99755859375
+        },
+        {
+          "start": 19.16,
+          "end": 19.38,
+          "word": " 打",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 19.38,
+          "end": 19.38,
+          "word": "赏",
+          "probability": 0.999755859375
+        },
+        {
+          "start": 19.38,
+          "end": 19.38,
+          "word": "支持",
+          "probability": 1.0
+        },
+        {
+          "start": 19.38,
+          "end": 19.38,
+          "word": "明",
+          "probability": 1.0
+        },
+        {
+          "start": 19.38,
+          "end": 19.38,
+          "word": "镜",
+          "probability": 0.999755859375
+        },
+        {
+          "start": 19.38,
+          "end": 19.38,
+          "word": "与",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 19.38,
+          "end": 19.54,
+          "word": "点",
+          "probability": 1.0
+        },
+        {
+          "start": 19.54,
+          "end": 19.7,
+          "word": "点",
+          "probability": 1.0
+        },
+        {
+          "start": 19.7,
+          "end": 19.92,
+          "word": "栏",
+          "probability": 0.999755859375
+        },
+        {
+          "start": 19.92,
+          "end": 19.92,
+          "word": "目",
+          "probability": 1.0
+        }
+      ],
+      "temperature": 0.0
+    },
+    {
+      "id": 2,
+      "seek": 3000,
+      "start": 32.47,
+      "end": 44.91,
+      "text": "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目",
+      "tokens": [
+        50365,
+        27908,
+        1960,
+        2392,
+        251,
+        12579,
+        5266,
+        252,
+        220,
+        7422,
+        95,
+        10034,
+        227,
+        220,
+        17819,
+        105,
+        28926,
+        220,
+        12467,
+        5266,
+        237,
+        35488,
+        11100,
+        12373,
+        250,
+        940,
+        236,
+        12579,
+        12579,
+        8987,
+        237,
+        11386,
+        51864
+      ],
+      "avg_logprob": -0.04641544029993169,
+      "compression_ratio": 0.8513513513513513,
+      "no_speech_prob": 0.6591796875,
+      "words": [
+        {
+          "start": 32.47,
+          "end": 33.63,
+          "word": "请",
+          "probability": 0.0028400421142578125
+        },
+        {
+          "start": 33.63,
+          "end": 34.17,
+          "word": "不",
+          "probability": 0.98388671875
+        },
+        {
+          "start": 34.17,
+          "end": 37.13,
+          "word": "吝",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 37.13,
+          "end": 37.47,
+          "word": "点",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 37.47,
+          "end": 37.47,
+          "word": "赞",
+          "probability": 1.0
+        },
+        {
+          "start": 37.47,
+          "end": 37.57,
+          "word": " 订",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 37.57,
+          "end": 37.57,
+          "word": "阅",
+          "probability": 1.0
+        },
+        {
+          "start": 37.57,
+          "end": 37.75,
+          "word": " 转",
+          "probability": 0.999755859375
+        },
+        {
+          "start": 37.75,
+          "end": 37.75,
+          "word": "发",
+          "probability": 0.99853515625
+        },
+        {
+          "start": 37.75,
+          "end": 38.37,
+          "word": " 打",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 38.37,
+          "end": 38.65,
+          "word": "赏",
+          "probability": 0.999755859375
+        },
+        {
+          "start": 38.65,
+          "end": 38.65,
+          "word": "支持",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 38.65,
+          "end": 38.65,
+          "word": "明",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 38.65,
+          "end": 39.47,
+          "word": "镜",
+          "probability": 0.999755859375
+        },
+        {
+          "start": 39.47,
+          "end": 43.03,
+          "word": "与",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 43.03,
+          "end": 43.03,
+          "word": "点",
+          "probability": 1.0
+        },
+        {
+          "start": 43.03,
+          "end": 43.19,
+          "word": "点",
+          "probability": 0.99951171875
+        },
+        {
+          "start": 43.19,
+          "end": 44.91,
+          "word": "栏",
+          "probability": 0.999755859375
+        },
+        {
+          "start": 44.91,
+          "end": 44.91,
+          "word": "目",
+          "probability": 1.0
+        }
+      ],
+      "temperature": 0.0
+    }
+  ],
+  "decoder": [
+    {
+      "prompt": " 咩栗, 咩栗羊, 小棉花",
+      "text": "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目",
+      "avg_logprob": -0.1359145189909374,
+      "temperature": 0.0,
+      "compression_ratio": 0.8513513513513513,
+      "no_speech_prob": 0.018096923828125
+    },
+    {
+      "prompt": " 咩栗, 咩栗羊, 小棉花请不吝点赞 订阅 转发 打赏支持明镜与点点栏目",
+      "text": "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目",
+      "avg_logprob": -0.04641544029993169,
+      "temperature": 0.0,
+      "compression_ratio": 0.8513513513513513,
+      "no_speech_prob": 0.6591796875
+    }
+  ]
+}

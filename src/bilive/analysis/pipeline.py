@@ -52,19 +52,32 @@ class AnalysisPipeline:
         self.encode_limit = threading.BoundedSemaphore(max(1, int(settings.mimo.encode_concurrency)))
         self.correct = correct or self._correct
 
-    def _correct(self, segments, **kwargs):
+    def _correct(self, segments, *, audio_source=None, start_seconds=None, duration_seconds=None, **kwargs):
         from bilive.vendor.autoslice.transcript_correct import correct_transcript_segments
-        return correct_transcript_segments(segments, **kwargs, base_url=self.settings.mimo.base_url,
-                                           model=self.settings.mimo.model, timeout=self.settings.mimo.timeout)
+        from bilive.vendor.autoslice.mllm_sdk.audio_analyzer import extract_audio, cleanup_audio
+        audio = None
+        try:
+            if audio_source is not None:
+                audio = extract_audio(str(audio_source), start_seconds=start_seconds, duration_seconds=duration_seconds)
+                if not audio:
+                    raise PipelineError('字幕校对音频提取失败')
+            return correct_transcript_segments(segments, **kwargs, audio_path=audio, base_url=self.settings.mimo.base_url,
+                                               model=self.settings.mimo.model, timeout=self.settings.mimo.timeout)
+        finally:
+            if audio:
+                cleanup_audio(audio)
 
-    def _correct_subtitle_lines(self, lines, *, artist, title, profile=None):
+    def _correct_subtitle_lines(self, lines, *, artist, title, profile=None,
+                                audio_source=None, start_seconds=None, duration_seconds=None):
         """Correction may change text only; rejected output leaves input untouched."""
         from bilive.vendor.autoslice.analysis_result import TranscriptSegment
         from bilive.lifecycle.profiles import subtitle_hotwords_for_profile
         timestamps = [(v.start, v.end) for v in lines]
+        window = ({'audio_source': audio_source, 'start_seconds': start_seconds, 'duration_seconds': duration_seconds}
+                  if audio_source is not None else {})
         corrected = self.correct([TranscriptSegment(v.start, v.end, v.text) for v in lines],
                                  artist=artist, title=title,
-                                 hotwords=subtitle_hotwords_for_profile(profile or {}))
+                                 hotwords=subtitle_hotwords_for_profile(profile or {}), **window)
         if (len(corrected) != len(lines) or any(
                 (v.start, v.end) != stamp or not isinstance(v.text, str) or not v.text.strip()
                 for stamp, v in zip(timestamps, corrected))):
@@ -185,7 +198,8 @@ class AnalysisPipeline:
             try:
                 corrected = self._correct_subtitle_lines(lines,
                     artist=profile.get('display_name') or Path(s['source_relpath']).parent.name,
-                    title=s.get('title', ''), profile=profile)
+                    title=s.get('title', ''), profile=profile, audio_source=source,
+                    start_seconds=start, duration_seconds=end-start)
                 changed = sum(a.text != b.text for a, b in zip(lines, corrected))
                 lines = corrected
                 correction = {'status': 'corrected' if changed else 'unchanged', 'changed_lines': changed}
@@ -482,7 +496,8 @@ class AnalysisPipeline:
                 try:
                     with timed_stage(s,'correction'):
                         lines = self._correct_subtitle_lines(lines,
-                            artist=profile.get('display_name') or Path(rel).parent.name, title=result.title, profile=profile)
+                            artist=profile.get('display_name') or Path(rel).parent.name, title=result.title, profile=profile,
+                            audio_source=source, start_seconds=start, duration_seconds=end-start)
                     alignment['correction'] = 'completed'
                 except Exception:
                     alignment['correction'] = 'failed_original_retained'

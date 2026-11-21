@@ -67,7 +67,7 @@ def test_transcription_does_not_accept_silent_partial_batch_result(monkeypatch):
     audio_analyzer._whisper_model_key = None
 
     result = audio_analyzer.transcribe_audio_whisper(
-        "audio.wav", cpu_threads=8, batch_size=8, hotwords='咩栗, 咩栗羊, 小棉花')
+        "audio.wav", cpu_threads=8, batch_size=8, vad_filter=True, hotwords='咩栗, 咩栗羊, 小棉花')
 
     assert [v['text'] for v in result['segments']] == ['有效字幕', '剂量不同，效果不同']
     assert result["device"] == "cpu"
@@ -77,7 +77,8 @@ def test_transcription_does_not_accept_silent_partial_batch_result(monkeypatch):
     assert 'batch_size' not in calls[1][1]
     assert calls[1][1]["vad_parameters"]["min_silence_duration_ms"] == 2000
     assert calls[1][1]["word_timestamps"] is True
-    assert calls[1][1]['hotwords'] == '咩栗, 咩栗羊, 小棉花'
+    assert 'hotwords' not in calls[1][1]
+    assert calls[1][1]['condition_on_previous_text'] is False
     assert result["segments"][0]["words"] == []
 
 
@@ -122,7 +123,7 @@ def test_transcribe_loads_cuda_model_with_dll_paths(monkeypatch):
     assert result["segments"][0]["words"] == [{"start": 0.1, "end": 0.9, "word": "上卡"}]
 
 
-def test_hotwords_follow_each_request_in_cached_sequential_model(monkeypatch):
+def test_hotwords_are_not_injected_into_cached_sequential_decoder(monkeypatch):
     calls = []
     loads = []
     cue = types.SimpleNamespace(start=0.1, end=0.9, text='有效字幕', words=[])
@@ -144,6 +145,29 @@ def test_hotwords_follow_each_request_in_cached_sequential_model(monkeypatch):
         calls.clear()
         result = audio_analyzer.transcribe_audio_whisper('audio.wav', hotwords=words)
         assert result['mode'] == 'sequential' and result['segments'][0]['start'] == 0.1
-        assert all(options.get('hotwords') == words for _, options in calls)
+        assert all('hotwords' not in options for _, options in calls)
         assert all(options['word_timestamps'] is True for _, options in calls)
     assert loads == [True]
+
+
+def test_default_recognition_preserves_speech_inside_vad_gap(monkeypatch):
+    from bilive.config.settings import Settings
+
+    class WhisperModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def transcribe(self, *args, **kwargs):
+            # The retained 2026-10-30 sample loses laughing speech when VAD is on.
+            cues = [types.SimpleNamespace(start=10.38, end=13.6, text='哦，看错了', words=[])]
+            if not kwargs['vad_filter']:
+                cues.append(types.SimpleNamespace(start=32.46, end=35.12,
+                                                 text='不好意思，老师，我不是那个意思', words=[]))
+            cues.append(types.SimpleNamespace(start=47.53, end=49.73, text='我其实没咋听过', words=[]))
+            return iter(cues), types.SimpleNamespace(language='zh')
+
+    monkeypatch.setitem(sys.modules, 'faster_whisper', types.SimpleNamespace(WhisperModel=WhisperModel))
+    monkeypatch.setattr(audio_analyzer, '_whisper_model', None)
+    monkeypatch.setattr(audio_analyzer, '_whisper_model_key', None)
+    result = audio_analyzer.transcribe_audio_whisper('audio.wav', vad_filter=Settings().subtitle.asr_vad)
+    assert any('不是那个意思' in cue['text'] for cue in result['segments'])

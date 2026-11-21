@@ -1633,7 +1633,7 @@ async function loadStreamerProfile() {
       <button id="profile-season-load" type="button" class="btn btn-secondary btn-sm">读取我的合集</button><p id="profile-season-message" role="status" class="hint">用于该主播新建的手动切片和自动切片；单条切片可修改或清空。已有片段保留原选择，投稿前再次验证合集。</p>
       <div class="subtitle-preset-picker">${subtitlePresetSelectHTML('profile-subtitle-preset', p.default_subtitle_style, {inherit: true})}<p class="hint">保存档案后，该主播以后的手动切片和自动切片默认使用所选样式。已有片段保留原样式；单条切片仍可单独修改。</p><div id="profile-subtitle-preview">${subtitlePresetSampleHTML()}</div></div>
       <p><label for="profile-subtitle-hotwords">字幕专名（每行一个）</label><textarea id="profile-subtitle-hotwords" style="width:100%;min-height:120px" data-profile="subtitle_hotwords" aria-describedby="subtitle-hotwords-help" placeholder="常见联动主播名&#10;角色名&#10;游戏名">${htmlEscape((p.subtitle_hotwords || []).join("\n"))}</textarea></p>
-      <p id="subtitle-hotwords-help" class="hint">填写正确名称，自动切片和手动识别字幕共用；自动包含上方的主播显示名和别名。常用专名放在前面，避免填写大段说明。修改后用于下一次识别，已有字幕需重新识别。</p>
+      <p id="subtitle-hotwords-help" class="hint">填写正确名称，用于字幕识别后的专名校对；自动包含上方的主播显示名和别名。只填写名称，校对时结合原音频和上下文判断。修改后用于下一次识别，已有字幕需重新识别或手工修改。</p>
       ${[
         ["default_description", "默认简介"],
         ["approved_guidance", "已批准的人工指导"],
