@@ -7,6 +7,7 @@ SNAPSHOT_FIELDS = (
     'revision', 'source_start', 'source_end', 'title', 'description', 'tags',
     'dynamic', 'tid', 'topic', 'season', 'decision', 'human_reviewed',
     'human_feedback', 'note', 'quality_score', 'completeness_score', 'confidence',
+    'editorial_angle', 'cover_design', 'selected_cover',
 )
 
 

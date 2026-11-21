@@ -88,6 +88,9 @@ class Worker:
             if self.analysis is None:
                 raise PipelineError('local transcription unavailable')
             return self.analysis.transcribe_segment(job)
+        if action == 'cover_frames':
+            from bilive.media.cover import capture_frames
+            return capture_frames(self.workbench, job)
         if action == 'generate_metadata':
             if self.analysis is None:
                 raise PipelineError('文案生成不可用')

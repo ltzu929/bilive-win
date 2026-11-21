@@ -133,6 +133,9 @@ class AnalysisPipeline:
         profile = profile_for_source(wb.videos, segment['source_relpath'])
         m = self.settings.mimo
         metadata = generate_metadata(lines, artist=profile.get('display_name') or Path(segment['source_relpath']).parent.name,
+                                     editorial_angle=segment.get('editorial_angle', ''),
+                                     suggestion=segment.get('editorial_suggestion'),
+                                     guidance=profile.get('approved_guidance', ''),
                                      duration=duration, model=m.model, base_url=m.base_url, timeout=m.timeout)
         with wb.lock():
             read_current()
@@ -369,6 +372,11 @@ class AnalysisPipeline:
             s = self.workbench.load(job.target)
             self.workbench.check_revision(s, job.payload['revision'])
             s['latest_rejudgment'] = json.loads(record_path.read_text(encoding='utf-8'))
+            for result in results:
+                plan = self._editorial_suggestion(result, start, s['source_start'], s['source_end'])
+                if plan:
+                    s['editorial_suggestion'] = plan
+                    break
             self.workbench.save(s)
             return {'ok':True,'result_count':len(results),'requires_manual_application':True}
 
@@ -385,6 +393,25 @@ class AnalysisPipeline:
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(finite(value), ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
         tmp.replace(path)
+
+    @staticmethod
+    def _editorial_suggestion(result, origin, start, end):
+        raw = getattr(result, 'editorial_suggestion', None)
+        if not raw or result.judge_status not in {'keep', 'review'}:
+            return None
+        times = [raw.get(key) for key in ('start', 'end', 'frame')]
+        if not all(type(t) in (int, float) and math.isfinite(t) for t in times):
+            return None
+        a, b, frame = (origin + t for t in times)
+        if not (start <= a < b <= end and start <= frame < end):
+            return None
+        text = {}
+        for key, limit in [('angle', 240), ('evidence', 500), ('caption', 32)]:
+            value = raw.get(key, '')
+            if not isinstance(value, str) or len(value) > limit or (key != 'caption' and not value.strip()):
+                return None
+            text[key] = value.strip()
+        return {**text, 'start': a, 'end': b, 'frame': frame}
 
     def _result(self, result, rel, source, event, candidate, entry, history, pre_asr, duration):
         trim = result.suggested_trim
@@ -419,6 +446,9 @@ class AnalysisPipeline:
              "completeness_score":quality[1] if isinstance(quality[1],(int,float)) and math.isfinite(quality[1]) else None,
              "confidence":quality[2] if isinstance(quality[2],(int,float)) and math.isfinite(quality[2]) else None,
              "candidate_path":str(candidate)}
+        plan = self._editorial_suggestion(result, event.start, start, end)
+        if plan:
+            s['editorial_suggestion'] = plan
         s.update(candidate_start=event.start,candidate_end=event.end,core_start=event.burst_start,core_end=event.burst_end,
                  original_source_start=start,original_source_end=end,
                  duplicate_of=getattr(result,'duplicate_of',None),duplicate_reason=getattr(result,'duplicate_reason',None))
@@ -458,6 +488,8 @@ class AnalysisPipeline:
                     alignment['correction'] = 'failed_original_retained'
                     s['timings']['correction']['status'] = 'failed'
             s.update(source_start=start,source_end=end,alignment=alignment)
+            if plan and not self._editorial_suggestion(result, event.start, start, end):
+                s.pop('editorial_suggestion', None)
             from bilive.vendor.autoslice.analysis_result import TranscriptSegment
             result.source_start,result.source_end = start,end
             result.transcript_segments = [TranscriptSegment(v.start,v.end,v.text) for v in lines]

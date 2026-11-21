@@ -17,6 +17,7 @@ async function renderSubmission() {
   clearTimeout(submissionTimer);
   const current = beginPage('submission');
   const main = document.getElementById('main');
+  if (submissionView?.coverUrl) URL.revokeObjectURL(submissionView.coverUrl);
   submissionView = null;
   main.innerHTML = pageHead('视频投稿', '填写投稿资料，确认后提交') + emptyState('正在读取成片…');
   const id = pageParams().get('segment_id');
@@ -47,7 +48,7 @@ function drawSubmission(view) {
           </section>
           <section class="card submission-section"><div class="submission-section-title"><h2>基本信息</h2><span class="muted">资料已继承当前切片</span></div>
             <fieldset id="submission-fields">
-              <div class="submission-field"><label>视频封面</label><div><div class="submission-cover">${s.cover_path ? `<img src="${htmlEscape(apiURL(`/api/segments/${encodeURIComponent(s.segment_id)}/cover`))}?revision=${s.revision}" alt="当前投稿封面">` : '<span class="muted">生成成片后显示封面</span>'}</div><p class="hint">使用当前成片生成的封面。</p></div></div>
+              ${coverEditorHTML(s)}
               <div class="submission-field"><label for="submission-title">标题 <span class="required">*</span></label><div><input id="submission-title" required maxlength="80" placeholder="填写视频标题"><p class="submission-counter" id="submission-title-count"></p></div></div>
               <div class="submission-field"><label for="submission-tid">分区 <span class="required">*</span></label><div><input id="submission-tid" type="number" min="1" max="10000" step="1" required placeholder="填写 B 站分区编号"><p class="hint">沿用当前切片分区，可修改编号。</p></div></div>
               <div class="submission-field"><label for="submission-tags">标签</label><div><input id="submission-tags" placeholder="用逗号分隔，例如：直播切片，日常"><div class="submission-tag-preview" id="submission-tag-preview"></div><p class="hint" id="submission-tag-count"></p></div></div>
@@ -58,7 +59,7 @@ function drawSubmission(view) {
               <div class="submission-field"><label for="submission-reason">改文案的理由</label><div><input id="submission-reason" maxlength="1000" placeholder="选填，例如：原话没说两小时 / 标题没点出真正的梗"><p class="hint">随草稿保存，仅供复核，不会发到 B 站。</p></div></div>
             </fieldset>
           </section>
-          <section class="card submission-section submission-suggestion"><div class="submission-section-title"><div><h2>文案助手</h2><p class="hint">根据当前已保存字幕生成建议，采用后仍可修改。</p></div><button id="submission-generate" type="button" class="btn btn-secondary">${icon('file-text')}生成文案建议</button></div><div id="submission-suggestion" aria-live="polite">${metadataSuggestionHTML(s)}</div></section>
+          <section class="card submission-section submission-suggestion"><div class="submission-section-title"><div><h2>文案助手</h2><p class="hint">结合已保存字幕、看点和主播编辑偏好生成标题与简介。</p></div><button id="submission-generate" type="button" class="btn btn-secondary">${icon('file-text')}生成文案建议</button></div><div id="submission-suggestion" aria-live="polite">${metadataSuggestionHTML(s)}</div></section>
           <footer class="submission-footer"><div><strong id="submission-save-state" role="status">投稿资料已保存</strong><p class="hint" id="submission-feedback" role="status">保存草稿后可稍后继续，点击提交才会开始后台投稿。</p></div><div class="action-row"><button id="submission-save" type="button" class="btn btn-secondary">保存草稿</button><button id="submission-submit" type="submit" class="btn btn-primary">${icon('cloud-upload')}提交投稿</button></div></footer>
           <section id="submission-editorial-history" class="card submission-section">${editorialHistoryHTML(s)}</section>
         </form>
@@ -81,14 +82,17 @@ function drawSubmission(view) {
         }
         control.value = draft.values[i];
       });
+      view.coverDraft = draft.cover || null;
+      view.manualAngle = draft.angle;
       view.draftRevision = draft.revision;
-      view.dirty = controls.some((c, i) => c.value !== view.savedValues[i]);
+      view.dirty = !!view.coverDraft || (draft.angle != null && draft.angle !== (s.editorial_angle || '')) || controls.some((c, i) => c.value !== view.savedValues[i]);
     }
   } catch { /* Invalid local draft does not replace the server copy. */ }
   controls.forEach(control => {
     control.addEventListener('input', () => submissionChanged(view));
     control.addEventListener('change', () => submissionChanged(view));
   });
+  bindCoverEditor(view);
   document.getElementById('submission-topic').addEventListener('change', () => submissionTopicInfo(view));
   document.getElementById('submission-topic-search').onclick = () => submissionLoadChoices(view, 'topic');
   document.getElementById('submission-topic-keywords').onkeydown = event => {
@@ -115,13 +119,14 @@ function drawSubmission(view) {
 
 function submissionLocked(view) {
   const s = view.segment;
-  return !!(view.busy || s.publish_approval || s.active_job || s.state === 'dropped');
+  return !!(view.busy || view.coverLoading || s.publish_approval || s.active_job || s.state === 'dropped');
 }
 
 function submissionChanged(view) {
-  view.dirty = view.controls.some((c, i) => c.value !== view.savedValues[i]);
+  const angle = view.manualAngle;
+  view.dirty = !!view.coverDraft || (angle != null && angle !== (view.segment.editorial_angle || '')) || view.controls.some((c, i) => c.value !== view.savedValues[i]);
   try {
-    if (view.dirty) localStorage.setItem(submissionDraftKey(view.segment), JSON.stringify({revision: view.draftRevision, values: view.controls.map(c => c.value)}));
+    if (view.dirty) localStorage.setItem(submissionDraftKey(view.segment), JSON.stringify({revision: view.draftRevision, values: view.controls.map(c => c.value), cover:view.coverDraft, angle}));
     else localStorage.removeItem(submissionDraftKey(view.segment));
   } catch { setMessage('submission-feedback', '浏览器草稿存储不可用，请保存草稿后再离开。'); }
   updateSubmission(view);
@@ -196,8 +201,10 @@ async function saveSubmission(view) {
     expected_revision: view.segment.revision, title: values[0], description: values[1],
     tags: values[2].split(/[,，\n]/).map(t => t.trim()).filter(Boolean), tid: values[3] ? Number(values[3]) : null,
     topic: values[4] ? JSON.parse(values[4]) : null, season: values[5] ? JSON.parse(values[5]) : null, dynamic: values[6],
-    reason: values[7],
+    reason: values[7], cover: view.coverDraft || null,
+    editorial_angle: view.manualAngle,
   });
+    if (view.coverDraft && (!updated.selected_cover || !updated.cover_design)) throw new Error('当前服务尚未支持封面保存，请重启工作台服务');
     if ((updated.dynamic || '') !== values[6]) throw new Error('当前工作台服务尚未支持动态文案，请更新并重启服务后重试');
   } catch (error) {
     // Keep the draft while refreshing a changed/protected server revision.
@@ -213,6 +220,14 @@ async function saveSubmission(view) {
   document.getElementById('submission-reason').value = '';
   view.savedValues = view.controls.map(c => c.value);
   view.dirty = false;
+  view.coverDraft = null;
+  if (updated.cover_path) {
+    const url = apiURL('/api/segments/'+encodeURIComponent(updated.segment_id)+'/cover')+'?revision='+updated.revision;
+    const img = new Image(); img.src = url; img.alt = '当前投稿封面';
+    document.getElementById('saved-cover').replaceChildren(img);
+    const video = document.querySelector('.submission-preview video');
+    if (video) video.poster = url;
+  }
   try { localStorage.removeItem(submissionDraftKey(updated)); } catch { /* Server save succeeded. */ }
   document.getElementById('submission-suggestion').innerHTML = metadataSuggestionHTML(updated);
   document.getElementById('submission-editorial-history').innerHTML = editorialHistoryHTML(updated);
@@ -268,7 +283,12 @@ async function watchSubmissionJob(view, id) {
       view.segment = await reviewAPI(`/api/segments/${encodeURIComponent(view.segment.segment_id)}`);
       if (!view.current()) return;
     }
-    setMessage('submission-feedback', job.status === 'done' ? '文案建议已生成，可核对后采用。' : `任务未完成：${job.result?.error || '请检查后重试'}`);
+    if (job.action === 'cover_frames' && job.status === 'done') {
+      view.showCoverFrames?.(job.result.frames);
+      setMessage('submission-feedback', '候选帧已生成，选中后可下载原图。');
+    } else {
+      setMessage('submission-feedback', job.status === 'done' ? '文案建议已生成，可核对后采用。' : `任务未完成：${job.result?.error || '请检查后重试'}`);
+    }
     updateSubmission(view);
   } catch (error) {
     if (view.current()) {

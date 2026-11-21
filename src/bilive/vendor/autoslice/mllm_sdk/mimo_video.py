@@ -457,6 +457,11 @@ def _build_prompt(
         "trim_start, trim_end, core_start, core_end。decision 只能是 keep。"
         "quality_score、completeness_score、confidence 必须是 0.0 到 1.0 之间的数字，"
         "不是百分制数字，也不能填写文字。"
+        "有可辨认的画面时，在该 clip 的 editorial_suggestion 中提供 angle（一句话看点）、"
+        "evidence（能在画面或声音中核对的具体事实）、start、end（依据区间）、frame（建议截帧秒数）、"
+        "caption（最多32字的封面短句）。三个时间均相对候选开头，必须位于 trim 内。"
+        "优先让缩略图能看到核心人物、物件或反应；只听到声音而没有合适画面时可省略建议。"
+        "单纯问候、打卡或晚安造成的弹幕峰值不能证明另一段内容值得切。"
         "trim_start/trim_end 是相对"
         "候选视频开头的秒数。tags 是字符串数组。\n"
         "本次候选窗口只允许返回一个主片段；如果有多个可能片段，只保留最完整、"
@@ -628,6 +633,8 @@ def _analysis_from_mimo_dict(
         completeness_score=completeness_score,
         confidence=confidence,
     )
+    if retain and isinstance(data.get('editorial_suggestion'), dict):
+        result.editorial_suggestion = data['editorial_suggestion']
     if retain and score_issues:
         review_reason = (
             "Automatic publish quality gate requires review: "

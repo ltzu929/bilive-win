@@ -68,6 +68,7 @@ class AnalysisResult:
     source_end: Optional[float] = None
     transcript: str = ""
     transcript_segments: List[TranscriptSegment] = field(default_factory=list)
+    editorial_suggestion: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AnalysisResult":
@@ -113,6 +114,7 @@ class AnalysisResult:
             clip_type=data.get("clip_type", ""),
             topic_summary=data.get("topic_summary", ""),
             why_viewer_would_watch=data.get("why_viewer_would_watch", ""),
+            editorial_suggestion=data.get("editorial_suggestion") if isinstance(data.get("editorial_suggestion"), dict) else {},
             completeness_score=data.get("completeness_score", 0.0),
             confidence=data.get("confidence", 0.0),
             raw_model_response=(
@@ -167,6 +169,7 @@ class AnalysisResult:
             "clip_type": self.clip_type,
             "topic_summary": self.topic_summary,
             "why_viewer_would_watch": self.why_viewer_would_watch,
+            "editorial_suggestion": self.editorial_suggestion,
             "completeness_score": self.completeness_score,
             "confidence": self.confidence,
             "raw_model_response": self.raw_model_response,

@@ -24,12 +24,13 @@ function clearEditorialDraft(s) {
 }
 function editorialHistoryHTML(s) {
   const events = s?.editorial_history || [];
-  const actions = {create: '人工补选', keep: '保留', drop: '废弃', range: '调整范围', metadata: '修改文案', feedback: '取舍备注'};
+  const actions = {create: '人工补选', keep: '保留', drop: '废弃', range: '调整范围', metadata: '修改投稿草稿', feedback: '取舍备注'};
   const kinds = {content: '内容取舍', technical: '技术问题', duplicate: '重复版本'};
-  const fields = {source_start: '开始', source_end: '结束', title: '标题', description: '简介', tags: '标签', dynamic: '粉丝动态', tid: '分区', topic: '话题', season: '合集', decision: '决定'};
+  const fields = {source_start: '开始', source_end: '结束', editorial_angle: '看点', cover_design: '封面', title: '标题', description: '简介', tags: '标签', dynamic: '粉丝动态', tid: '分区', topic: '话题', season: '合集', decision: '决定'};
   const decisions = {keep: '系统保留', manual_keep: '人工保留', review: '待审核', drop: '废弃', judge_failed: '判断失败'};
   const value = (key, v) => v == null ? '—' : key === 'decision' ? decisions[v] || v
     : key === 'source_start' || key === 'source_end' ? timecode(v, false, true)
+    : key === 'cover_design' ? (v.uploaded ? '上传的封面' : `${timecode(v.frame_ms / 1000, false, true)} · ${v.secondary ? '人物与物件并排' : '单图近景'} · ${v.caption || '无短句'}`)
     : typeof v === 'object' ? JSON.stringify(v) : String(v);
   return `<details class="editorial-history"><summary>取舍与修改记录 · ${events.length} 条</summary>${events.length ? [...events].reverse().map(event => {
     const before = event.before || {}, after = event.after || {}, human = event.feedback || {};

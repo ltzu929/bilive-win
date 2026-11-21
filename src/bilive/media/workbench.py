@@ -99,7 +99,10 @@ class Workbench:
 
     def invalidate(self, s: dict) -> None:
         s.pop('preview', None)
-        s.pop('cover_path', None)
+        if s.get('selected_cover'):
+            s['cover_path'] = s['selected_cover']
+        else:
+            s.pop('cover_path', None)
         if s.get("final_path"):
             if s.get('publish_approval'):
                 raise ActionConflict('approved final is protected')
@@ -138,6 +141,13 @@ class Workbench:
                     raise ValueError("cannot change segment source")
                 before = snapshot(s)
                 self.invalidate(s)
+                frame_ms = s.get('cover_design', {}).get('frame_ms')
+                if frame_ms is not None and not start <= frame_ms / 1000 < end:
+                    for key in ('cover_path', 'selected_cover', 'cover_design'):
+                        s.pop(key, None)
+                plan = s.get('editorial_suggestion')
+                if plan and (plan['start'] < start or plan['end'] > end or not start <= plan['frame'] < end):
+                    s.pop('editorial_suggestion')
                 s["revision"] += 1
                 s["subtitles_revision"] = None
                 s['human_reviewed'] = False
@@ -202,7 +212,7 @@ class Workbench:
 
     def save_metadata(self, sid: str, expected: int, title: str, description: str, tags: list[str], tid: int | None = None,
                       publication_options: dict | None = None, *, dynamic: str | None = None,
-                      reason: str = '') -> dict:
+                      reason: str = '', cover=None, editorial_angle: str | None = None) -> dict:
         human = feedback(reason)
         title = title.strip()
         tags = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
@@ -229,6 +239,11 @@ class Workbench:
             validate_selections(**options)
             if options['topic'] and len(set([*tags, options['topic']['name']])) > 10:
                 raise ValueError('所选话题也占一个标签，请减少普通 TAG')
+            if cover is not None:
+                from bilive.media.cover import save_cover
+                save_cover(self.artifacts / sid, s, cover)
+            if editorial_angle is not None:
+                s['editorial_angle'] = editorial_angle.strip()
             # Publication metadata does not change the video or subtitle text.
             if s.get('final_path'):
                 row = self.uploads.get_by_path(s['final_path'])
@@ -292,8 +307,8 @@ class Workbench:
             self.save(s)
             return s
 
-    def submit(self, action: str, sid: str, expected: int) -> dict:
-        if action not in {"finalize", "reburn", "render", "approve_publish", "retry_judge", "transcribe_subtitles", "generate_metadata"}:
+    def submit(self, action: str, sid: str, expected: int, *, source_time: float | None = None) -> dict:
+        if action not in {"finalize", "reburn", "render", "approve_publish", "retry_judge", "transcribe_subtitles", "generate_metadata", "cover_frames"}:
             raise ValueError("action not available in manual workbench")
         with self.lock():
             s = self.load(sid)
@@ -315,7 +330,7 @@ class Workbench:
                 raise ActionConflict("current revision has no valid final")
             if action == 'retry_judge' and not s.get('candidate_path'):
                 raise ActionConflict('manual segment has no automatic candidate to rejudge')
-            if action not in {"approve_publish", "retry_judge", "transcribe_subtitles"} and s.get("subtitles_revision") != expected:
+            if action not in {"approve_publish", "retry_judge", "transcribe_subtitles", "cover_frames"} and s.get("subtitles_revision") != expected:
                 raise ActionConflict("save subtitles for this revision first")
             if action == 'generate_metadata':
                 saved = self.subtitles.load(sid)
@@ -323,8 +338,15 @@ class Workbench:
                     raise ActionConflict('请先保存当前片段的字幕，再生成文案建议')
             payload = {"revision": expected, "source_relpath": s["source_relpath"],
                        "source_start": s["source_start"], "source_end": s["source_end"]}
+            if action == 'cover_frames':
+                if type(source_time) not in (int, float) or not s['source_start'] <= source_time < s['source_end']:
+                    raise ValueError('请选择当前片段内的时间')
+                payload['source_time'] = source_time
             job = self.jobs.submit(action, sid, payload)
-            s["last_job_id"] = job.job_id
+            if action != 'cover_frames':
+                s["last_job_id"] = job.job_id
+            else:
+                s['cover_frame_job'] = job.job_id
             self.save(s)
             return {"job_id": job.job_id, "status": job.status.value, "action": action}
 
@@ -358,6 +380,12 @@ class Workbench:
                           if s.get("subtitles_revision") == s["revision"] else [])
         s["final_valid"] = self.valid_final(s)
         s["active_job"] = self.active(sid)
+        if job_id := s.get('cover_frame_job'):
+            done = self.jobs.root / f'{job_id}.done.json'
+            if done.is_file():
+                latest = self.jobs.load_job(done)
+                if latest.payload.get('revision') == s['revision']:
+                    s['cover_frames'] = (latest.result or {}).get('frames', [])
         s['preview_complete'] = bool(s.get('final_valid') and s.get('preview', {}).get('complete') and
                                      s.get('preview', {}).get('revision') == s.get('final_revision'))
         if s.get('last_job_id'):
@@ -427,6 +455,8 @@ class Workbench:
                     return {'ok':True,'upload_stage':row['stage'],'recovered_activation':True}
                 if not self.valid_final(s):
                     raise PipelineError("no current final output")
+                if s.get('cover_path') != row.get('cover_path'):
+                    raise PipelineError('草稿与投稿封面尚未同步，请重新保存草稿')
                 s.update(approval_job_id=job.job_id,approval_revision=s['revision'])
                 self.save(s)
                 row = self.uploads.activate(s["final_path"])
@@ -457,7 +487,8 @@ class Workbench:
         try:
             with timed_stage(s,'stage'):
                 from bilive.media.publication import generate_default_cover
-                s['cover_path'] = str(generate_default_cover(Path(result.final_path)))
+                selected = s.get('selected_cover')
+                s['cover_path'] = selected if selected and Path(selected).is_file() else str(generate_default_cover(Path(result.final_path)))
                 self.uploads.stage(result.final_path, title=s["title"], description=s.get('description', ''),
                                    tags=s.get('tags', []), tid=s.get('tid'), cover_path=s['cover_path'],
                                    topic=s.get('topic'), season=s.get('season'), dynamic=s.get('dynamic', ''))

@@ -755,7 +755,7 @@ function arrangeReviewWorkbench() {
   finalPanel.innerHTML = '<h3>成片确认</h3><p class="muted">在上方预览当前成片，确认画面和字幕后进入投稿页。</p>';
   if (review.segment) {
     const s = review.segment;
-    finalPanel.insertAdjacentHTML('beforeend', `<p id="final-preview-status" role="status">${s.preview_complete ? "已完整预览" : "尚未完整预览"} · 预览记录不影响人工批准</p>${s.cover_path ? `<figure><img src="${apiURL(`/api/segments/${s.segment_id}/cover`)}?revision=${s.revision}" alt="系统生成的默认封面" style="max-width:240px"><figcaption>系统默认封面</figcaption></figure>` : '<p class="muted">生成成片时自动生成默认封面。</p>'}`);
+    finalPanel.insertAdjacentHTML('beforeend', `<p id="final-preview-status" role="status">${s.preview_complete ? "已完整预览" : "尚未完整预览"} · 预览记录不影响人工批准</p>${s.final_valid && s.cover_path ? `<figure><img src="${apiURL(`/api/segments/${s.segment_id}/cover`)}?revision=${s.revision}" alt="当前投稿封面" style="max-width:240px"><figcaption>${s.selected_cover ? "已选投稿封面" : "默认封面"}</figcaption></figure>` : '<p class="muted">生成当前版本成片后，会显示默认封面。</p>'}`);
   }
   if (metadata) finalPanel.append(metadata);
   finalPanel.append(footer);
@@ -825,10 +825,11 @@ function reviewMarkup(s, task, lines, initial) {
         ["片段状态", reviewStates[s.state] || s.state],
         ["人工取舍理由", s.human_feedback?.reason || s.drop_reason || s.missed_reason || "未填写"],
         ["原有判断说明", s.note || "暂无"],
+        ...(s.editorial_suggestion ? [["AI 建议看点", s.editorial_suggestion.angle], ["音画依据", s.editorial_suggestion.evidence]] : []),
         ["质量", s.quality ?? s.quality_score ?? "—"],
         ["完整度", s.completeness ?? s.completeness_score ?? "—"],
         ["置信度", s.confidence ?? "—"],
-      ])}<div class="action-row"><button class="btn btn-secondary" data-dialog="points-dialog">编辑片段范围</button>${s.candidate_path ? '<button id="review-rejudge" class="btn btn-secondary">重新判断原候选</button>' : ""}</div>${s.latest_rejudgment ? `<details open><summary>最近重新判断结果</summary>${s.latest_rejudgment.results.map((r, i) => `<p>${htmlEscape(r.title)} · ${htmlEscape(r.judge_status)} · ${htmlEscape(r.quality_reason || r.judge_error)} ${r.suggested_trim ? `<button class="text-button" data-rejudge-range="${i}">将建议填入范围草稿</button>` : ""}</p>`).join("") || "<p>没有返回片段，仍需人工复核。</p>"}</details>` : ""}<details><summary>当前片段字幕样式</summary><div class="action-row"><a class="btn btn-secondary" href="#/settings?tab=subtitles">调整全局字幕设置</a><button id="review-style-default" class="btn btn-secondary">应用默认样式并使旧成片失效</button></div><p class="hint">应用后需要重新生成成片；也可在下方单独覆盖本片段样式。</p><label class="field">字幕样式 JSON<textarea id="review-style">${htmlEscape(JSON.stringify(s.subtitle_style || {}, null, 2))}</textarea></label><button id="review-style-save" class="btn btn-secondary">保存样式并使旧成片失效</button></details>`
+      ])}<div class="action-row">${s.editorial_suggestion ? `<button type="button" class="btn btn-secondary" id="review-evidence-seek">看依据 · ${timecode(s.editorial_suggestion.start)}–${timecode(s.editorial_suggestion.end)}</button>` : ''}<button class="btn btn-secondary" data-dialog="points-dialog">编辑片段范围</button>${s.candidate_path ? '<button id="review-rejudge" class="btn btn-secondary">重新判断原候选</button>' : ""}</div>${s.latest_rejudgment ? `<details open><summary>最近重新判断结果</summary>${s.latest_rejudgment.results.map((r, i) => `<p>${htmlEscape(r.title)} · ${htmlEscape(r.judge_status)} · ${htmlEscape(r.quality_reason || r.judge_error)} ${r.suggested_trim ? `<button class="text-button" data-rejudge-range="${i}">将建议填入范围草稿</button>` : ""}</p>`).join("") || "<p>没有返回片段，仍需人工复核。</p>"}</details>` : ""}<details><summary>当前片段字幕样式</summary><div class="action-row"><a class="btn btn-secondary" href="#/settings?tab=subtitles">调整全局字幕设置</a><button id="review-style-default" class="btn btn-secondary">应用默认样式并使旧成片失效</button></div><p class="hint">应用后需要重新生成成片；也可在下方单独覆盖本片段样式。</p><label class="field">字幕样式 JSON<textarea id="review-style">${htmlEscape(JSON.stringify(s.subtitle_style || {}, null, 2))}</textarea></label><button id="review-style-save" class="btn btn-secondary">保存样式并使旧成片失效</button></details>`
     : "<p>先选定源范围并创建人工片段。</p>";
   return (
     header + '<section id="recording-analysis" class="recording-analysis" role="status" aria-live="polite"><strong id="analysis-title"></strong><p id="analysis-detail"></p><button id="analysis-resume" class="btn btn-primary btn-sm" hidden>恢复分析</button></section>' +
@@ -1001,6 +1002,13 @@ function drawManualWorkbench() {
   document.getElementById("evidence-next").onclick = () => {
     review.evidenceOffset += 20;
     renderManualWorkbench();
+  };
+  const evidenceSeek = document.getElementById('review-evidence-seek');
+  if (evidenceSeek) evidenceSeek.onclick = () => {
+    const segment = review.segment;
+    const isFinal = review.media === 'final';
+    const video = document.getElementById(isFinal ? 'review-final' : 'review-source');
+    if (video) video.currentTime = segment.editorial_suggestion.start - (isFinal ? segment.source_start : 0);
   };
   document.querySelectorAll("[data-candidate-seek]").forEach(
     (button) =>

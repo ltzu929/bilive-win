@@ -23,6 +23,7 @@ from bilive.domain.models import (
 from bilive.domain.states import manual_retry_allowed
 from bilive.jobs.action_jobs import ActionConflict, ActionJobStore
 from bilive.media.subtitle_store import SubtitleStore
+from bilive.media.cover import CoverDesign, frame_file, render_cover
 from bilive.media.workbench import Workbench, validate_id
 from bilive.worker.locks import LockUnavailable
 from bilive.worker.control import WorkerControl
@@ -241,6 +242,8 @@ def save_segment_feedback(segment_id: str, request: FeedbackRequest):
 
 class MetadataRequest(BaseModel):
     expected_revision: int
+    cover: CoverDesign | None = None
+    editorial_angle: str | None = Field(default=None, max_length=240)
     reason: str = Field(default='', max_length=1000)
     title: str
     description: str = ''
@@ -290,7 +293,8 @@ def save_segment_metadata(segment_id: str, request: MetadataRequest):
             options = publication_client().publication_options.validate_options(**options)
     return workbench.save_metadata(segment_id, request.expected_revision,
                                    request.title, request.description, request.tags, request.tid, options,
-                                   dynamic=request.dynamic, reason=request.reason)
+                                   dynamic=request.dynamic, reason=request.reason, cover=request.cover,
+                                   editorial_angle=request.editorial_angle)
 
 
 class PreviewRequest(BaseModel):
@@ -308,9 +312,30 @@ def default_final_cover(segment_id: str):
     segment = workbench.load(segment_id)
     path = Path(segment.get('cover_path') or '')
     expected = workbench.artifacts / segment_id / 'cover.jpg'
-    if path.resolve() != expected.resolve() or not path.is_file():
+    from re import fullmatch
+    custom = path.resolve().parent == expected.parent.resolve() and fullmatch(r'cover-[0-9a-f]{64}\.jpg', path.name)
+    if (path.resolve() != expected.resolve() and not custom) or not path.is_file():
         raise FileNotFoundError('当前成片暂无默认封面')
     return FileResponse(path, media_type='image/jpeg', headers={'Cache-Control': 'no-cache'})
+
+
+@app.get('/api/segments/{segment_id}/frames/{ms}')
+def cover_frame(segment_id: str, ms: int, original: bool = False):
+    path = frame_file(workbench.artifacts / validate_id(segment_id), ms)
+    if original:
+        native = path.with_suffix('.png')
+        if not native.is_file():
+            raise HTTPException(status_code=409, detail='需要重新提取原尺寸画面')
+        return FileResponse(native, media_type='image/png', filename=f'{segment_id}-{ms}.png')
+    if not path.is_file():
+        raise FileNotFoundError('候选帧尚未生成')
+    return FileResponse(path, media_type='image/jpeg')
+
+
+@app.post('/api/segments/{segment_id}/cover-preview')
+def preview_cover(segment_id: str, design: CoverDesign):
+    segment = workbench.load(segment_id)
+    return Response(render_cover(workbench.artifacts / segment_id, segment, design), media_type='image/jpeg')
 
 
 class RetainRequest(BaseModel):
@@ -477,6 +502,8 @@ def submit_action(req: ActionRequest) -> dict[str, Any]:
         return accepted_with_wake({"job_id":job.job_id,"status":job.status.value,"action":job.action})
     if req.revision is None:
         raise HTTPException(status_code=422, detail="revision required")
+    if req.action == 'cover_frames':
+        return accepted_with_wake(workbench.submit(req.action, req.target, req.revision, source_time=req.payload.get('source_time')))
     return accepted_with_wake(workbench.submit(req.action, req.target, req.revision))
 
 
