@@ -37,7 +37,7 @@ def main() -> None:
         kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         kernel32.SetPriorityClass.restype = wintypes.BOOL
         process = kernel32.GetCurrentProcess()
-        if not kernel32.SetPriorityClass(process, 0x00004000):
+        if not kernel32.SetPriorityClass(process, 0x00000020):
             raise ctypes.WinError(ctypes.get_last_error())
 
     parser = argparse.ArgumentParser(description="Bilive Windows Worker")

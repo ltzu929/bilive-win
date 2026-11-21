@@ -20,12 +20,12 @@ def test_background_media_child_has_no_console():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows process priority")
-def test_media_child_yields_to_desktop():
+def test_media_child_uses_normal_priority():
     result = run_media_command(
         [sys.executable, "-c", "import ctypes; from ctypes import wintypes; k=ctypes.windll.kernel32; k.GetCurrentProcess.restype=wintypes.HANDLE; k.GetPriorityClass.argtypes=[wintypes.HANDLE]; print(k.GetPriorityClass(k.GetCurrentProcess()))"],
         capture_output=True, text=True, check=True,
     )
-    assert int(result.stdout.strip()) == subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    assert int(result.stdout.strip()) == subprocess.NORMAL_PRIORITY_CLASS
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg unavailable")

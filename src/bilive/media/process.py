@@ -28,7 +28,7 @@ def _bounded_ffmpeg_command(command: list[str]) -> list[str]:
 
 
 def run_media_command(command: list[str], **kwargs) -> subprocess.CompletedProcess:
-    flags = (subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    flags = (subprocess.CREATE_NO_WINDOW | subprocess.NORMAL_PRIORITY_CLASS
              if os.name == "nt" else 0)
     if Path(command[0]).stem.lower() == "ffmpeg":
         with _ffmpeg_slot:

@@ -30,7 +30,7 @@ function Get-BiliveTaskPlan {
         [pscustomobject]@{TaskName=$Entry.Name;TaskPath='\BiliveV2\';Execute=$Execute;
             Arguments=$Arguments;LegacyAction=$LegacyAction;
             WorkingDirectory=$ProjectDir;Trigger=$Entry.Trigger;At=$Entry.At;
-            StartWhenAvailable=$true;MultipleInstances='IgnoreNew';ExecutionTimeLimitSeconds=0}
+            StartWhenAvailable=$true;MultipleInstances='IgnoreNew';ExecutionTimeLimitSeconds=0;Priority=4}
     }
 }
 
@@ -51,7 +51,7 @@ function Register-BiliveTaskPlan {
             if (-not $Matches -and -not $LegacyMatches) {
                 throw "Task $($Item.TaskName) belongs to a different entry; refusing to replace it."
             }
-            $ExistingTasks[$Item.TaskName] = @{Matches=$Matches}
+            $ExistingTasks[$Item.TaskName] = @{Matches=$Matches;Settings=$Existing.Settings}
         }
     }
     foreach ($Item in $Plan) {
@@ -59,9 +59,14 @@ function Register-BiliveTaskPlan {
         if ($ExistingTasks.ContainsKey($Item.TaskName)) {
             $Saved = $ExistingTasks[$Item.TaskName]
             # Updating a known legacy action affects future launches only.
-            # Keep the current service, settings and principal intact.
+            # Keep the current service, other settings and principal intact.
             if (-not $Saved.Matches) {
                 Set-ScheduledTask -TaskName $Item.TaskName -TaskPath $Item.TaskPath -Action $Action
+            }
+            # Task priority 7 also lowers inherited disk I/O and memory priority.
+            if ($Saved.Settings.Priority -ne $Item.Priority) {
+                $Saved.Settings.Priority = $Item.Priority
+                Set-ScheduledTask -TaskName $Item.TaskName -TaskPath $Item.TaskPath -Settings $Saved.Settings
             }
             if ($Item.Trigger -eq 'Daily') {
                 # Reinstalling retention must apply its revised schedule too.
@@ -72,7 +77,7 @@ function Register-BiliveTaskPlan {
         }
         $Trigger = if ($Item.Trigger -eq 'Logon') { New-ScheduledTaskTrigger -AtLogOn -User $UserId }
                    else { New-ScheduledTaskTrigger -Daily -At $Item.At }
-        $Settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+        $Settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -Priority $Item.Priority
         $Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
         Register-ScheduledTask -TaskName $Item.TaskName -TaskPath $Item.TaskPath -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force
     }
