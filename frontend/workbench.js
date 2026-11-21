@@ -712,12 +712,17 @@ function arrangeReviewWorkbench() {
   const rail = document.createElement("aside");
   rail.className = "recording-rail";
   rail.setAttribute("aria-label", "录播选择");
-  rail.innerHTML = '<div class="rail-heading"><h2>场次</h2><button class="icon-button" id="recording-collapse" aria-label="收起场次列表">' + icon("chevron-left") + '</button></div>';
+  rail.innerHTML = '<div class="rail-heading"><div><span class="eyebrow">录制记录</span><h2>选择场次</h2></div><button class="icon-button" id="recording-collapse" aria-label="收起场次列表" title="收起场次列表">' + icon("chevron-left") + '</button></div>';
   const filterButton = document.createElement("button");
   filterButton.className = "text-button recording-filter-toggle";
-  filterButton.textContent = "筛选与排序";
+  filterButton.innerHTML = icon("settings") + '<span>筛选与排序</span>';
   filterButton.setAttribute("aria-expanded", "false");
-  filterButton.onclick = () => { const open = rail.classList.toggle("filters-open"); filterButton.setAttribute("aria-expanded", String(open)); };
+  filterButton.setAttribute("aria-label", "展开筛选与排序");
+  filterButton.onclick = () => {
+    const open = rail.classList.toggle("filters-open");
+    filterButton.setAttribute("aria-expanded", String(open));
+    filterButton.setAttribute("aria-label", `${open ? "收起" : "展开"}筛选与排序`);
+  };
   rail.append(filterButton);
   const picker = document.getElementById("source-dialog");
   const pickerParts = [".recording-filters", ".recording-filters + .hint", "#recording-results", ".recording-pagination"].map(selector => picker?.querySelector(selector));
@@ -762,15 +767,25 @@ function arrangeReviewWorkbench() {
   footer.querySelector(".hint")?.remove();
   const drop = finalPanel.querySelector("#review-drop-open");
   editor.querySelector(".editor-body").append(finalPanel);
-  workspace.append(editor, job);
-  content.prepend(candidates);
+  const stage = document.createElement("section");
+  stage.className = "review-stage";
+  stage.setAttribute("aria-label", "视频审核与当前操作");
+  grid.before(stage);
+  stage.append(grid, editor);
+  workspace.append(job);
+  const steps = document.createElement("nav");
+  steps.className = "review-steps";
+  steps.setAttribute("aria-label", "片段审核步骤");
+  steps.innerHTML = [["content", "01", "选择候选"], ["subtitles", "02", "核对字幕"], ["final", "03", "确认成片"]].map(([tab, number, label]) => `<button type="button" data-review-jump="${tab}" class="${review.tab === tab ? "active" : ""}" aria-current="${review.tab === tab ? "step" : "false"}"><span>${number}</span>${label}</button>`).join("");
+  workspace.querySelector(".workbench-head").after(steps);
+  steps.after(candidates);
   candidates.querySelector("h3").textContent = `片段候选 · ${review.segments.length} 个 · ${review.segments.filter(candidateNeedsReview).length} 个待审核`;
   content.querySelectorAll(".definition-list dt").forEach(dt => {
     if (["质量", "完整度", "置信度"].includes(dt.textContent)) { dt.nextElementSibling.remove(); dt.remove(); }
   });
   const context = document.createElement("aside");
   context.className = "review-context";
-  context.innerHTML = `<h2>${htmlEscape(review.segment?.title || "当前录播")}</h2><p id="context-state" class="muted"></p><p id="context-version" class="num muted"></p><p id="context-save" class="hint" role="status"></p><div class="context-range"></div><p class="context-reason">${htmlEscape(review.segment?.quality_reason || review.segment?.note || "请选择候选，结合视频作出人工判断。")}</p><div class="context-decisions"><button id="review-keep" class="btn btn-primary">保留并继续</button></div><p id="context-job" role="status"></p><p id="context-feedback" role="status"></p><p>播放位置 <span id="context-position" class="num">00:00:00</span></p><button id="review-next-step" class="btn btn-secondary">检查字幕</button>`;
+  context.innerHTML = `<div class="context-heading"><span class="eyebrow">当前片段</span><span id="context-position" class="num" title="当前播放位置">00:00:00</span></div><h2>${htmlEscape(review.segment?.title || "从候选中选择片段")}</h2><p id="context-state" class="context-state"></p><p id="context-version" class="num muted"></p><p id="context-save" class="context-save" role="status"></p><div class="context-range"></div><p class="context-reason">${htmlEscape(review.segment?.quality_reason || review.segment?.note || "选择上方的候选片段，在这里判断内容并调整范围。")}</p><div class="context-decisions"><button id="review-keep" class="btn btn-primary">保留并继续</button></div><p id="context-job" role="status"></p><p id="context-feedback" role="status"></p><button id="review-next-step" class="btn btn-secondary btn-block">检查字幕 ${icon("chevron-right")}</button>`;
   const range = grid.querySelector(".range-controls");
   context.querySelector(".context-range").append(range);
   if (drop) context.querySelector(".context-decisions").append(drop);
@@ -778,7 +793,7 @@ function arrangeReviewWorkbench() {
   context.querySelector('.context-range').insertAdjacentHTML('beforeend', '<label class="field" id="review-range-reason-field" hidden>范围调整理由（选填）<input id="review-range-reason" maxlength="1000" placeholder="例如：后面还有一句回应 / 开头无关"></label>');
   grid.append(context);
   const tabs = editor.querySelector(".tabs");
-  tabs.outerHTML = tabsHTML([["content", "候选"], ["subtitles", "字幕"], ["final", "成片"]], review.tab, "data-review-tab");
+  tabs.outerHTML = tabsHTML([["content", "片段信息"], ["subtitles", "字幕校对"], ["final", "成片确认"]], review.tab, "data-review-tab");
   const evidenceButton = document.getElementById("show-evidence");
   grid.querySelector(".density-empty").remove();
   content.append(evidenceButton);
@@ -793,6 +808,8 @@ function arrangeReviewWorkbench() {
     document.getElementById("subtitle-panel").append(style);
     style.insertAdjacentHTML('beforebegin', `<div class="subtitle-preset-picker" id="review-preset-picker">${subtitlePresetSelectHTML('review-style-preset', review.segment?.subtitle_style)}${subtitlePresetSampleHTML()}<button id="review-style-apply" class="btn btn-secondary">保存所选样式</button><p class="hint">保存样式后重新生成成片。</p></div>`);
   }
+  document.getElementById("review-in").title = "将播放位置设为入点";
+  document.getElementById("review-out").title = "将播放位置设为出点";
   if (review.segment) {
     setMessage("review-save-hint", "");
     setMessage("candidate-progress", "");
@@ -926,7 +943,7 @@ function drawManualWorkbench() {
   if (largePlayer) largePlayer.onclick = () => {
     review.largePlayer = !review.largePlayer;
     document.querySelector(".workbench-grid").classList.toggle("large-player", review.largePlayer);
-    largePlayer.textContent = review.largePlayer ? "返回并排" : "大画面";
+    largePlayer.textContent = review.largePlayer ? "标准画面" : "大画面";
     largePlayer.setAttribute("aria-pressed", review.largePlayer);
   };
   const switchTab = (tab) => {
@@ -944,13 +961,18 @@ function drawManualWorkbench() {
       b.setAttribute("aria-selected", b.dataset.reviewTab === tab);
       b.tabIndex = b.dataset.reviewTab === tab ? 0 : -1;
     });
+    document.querySelectorAll("[data-review-jump]").forEach(b => {
+      b.classList.toggle("active", b.dataset.reviewJump === tab);
+      if (b.dataset.reviewJump === tab) b.setAttribute("aria-current", "step");
+      else b.removeAttribute("aria-current");
+    });
     if (tab === "final") document.querySelector('[data-media-tab="final"]')?.click();
     else document.querySelector('[data-media-tab="source"]')?.click();
     updateReviewActions();
   };
   document
-    .querySelectorAll("[data-review-tab]")
-    .forEach((b) => (b.onclick = () => switchTab(b.dataset.reviewTab)));
+    .querySelectorAll("[data-review-tab], [data-review-jump]")
+    .forEach((b) => (b.onclick = () => switchTab(b.dataset.reviewTab || b.dataset.reviewJump)));
   document.querySelectorAll("[data-media-tab]").forEach(
     (b) =>
       (b.onclick = () => {
@@ -1216,6 +1238,8 @@ function drawManualWorkbench() {
         captureRangeDraft();
         capturePlayback();
         review.segment = { segment_id: b.dataset.segment };
+        review.tab = "content";
+        review.media = "source";
         renderManualWorkbench();
       }),
   );

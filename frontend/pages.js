@@ -11,9 +11,9 @@ const uploadLabels = {
 };
 const uploadTabs = [
   ["all", "当前任务"],
-  ["failed", "失败与需核对"],
-  ["processing", "待执行 / 发布中"],
-  ["waiting", "返回成片确认"],
+  ["failed", "失败 / 需核对"],
+  ["processing", "执行中"],
+  ["waiting", "待投稿确认"],
   ["published", "发布历史"],
   ["cancelled", "已取消"],
 ];
@@ -599,6 +599,7 @@ const settingsView = {
   automationDraft: null,
   configDraft: {},
   saving: false,
+  advancedSection: "analysis",
 };
 const settingsTabs = [
   ["processing", "自动化"],
@@ -678,8 +679,8 @@ const configNames = {
   tags: "默认标签",
   tid: "默认投稿分区",
   enabled: "自动清理",
-  unprocessed_days: "未处理录播保留天数",
-  published_hours: "发布成功后源录播保留小时数",
+  unprocessed_days: "未处理录播与未发布成片保留天数",
+  published_hours: "发布成功后录播与切片保留小时数",
   min_source_size_mb: "跳过分析的最小源大小（MiB）",
   max_base64_bytes: "模型视频编码大小上限（字节）",
   media_resolution: "模型画面分辨率",
@@ -694,7 +695,7 @@ const configNames = {
   max_attempts: "上传最大尝试次数",
   retry_base: "重试基础间隔（秒）",
   auth_retry: "登录检查间隔（秒）",
-  delete_after_success: "发布成功后清理本地成片",
+  delete_after_success: "发布成功立即删除成片（跳过保留期）",
 };
 function editableConfigSection(title, section, excluded = []) {
   const editor = settingsView.config.editor;
@@ -866,6 +867,16 @@ async function saveSettingsChanges() {
     updateSettingsSaveBar();
   }
 }
+function advancedSettingsHTML() {
+  const groups = {
+    analysis: [["mimo", "AI 分析模型"], ["burst", "候选召回"], ["quality", "质量门"], ["analysis", "分析参数"]],
+    subtitles: [["subtitle", "转写与对齐"], ["multi_modal", "转写性能"]],
+    runtime: [["worker", "处理任务"], ["video", "源录播"], ["upload", "上传性能"]],
+  };
+  if (!groups[settingsView.advancedSection]) settingsView.advancedSection = "analysis";
+  const sections = groups[settingsView.advancedSection];
+  return `<nav class="settings-section-nav" aria-label="高级参数分组">${[["analysis", "AI 与候选"], ["subtitles", "字幕与转写"], ["runtime", "任务与媒体"]].map(([key, label]) => `<button class="btn btn-secondary btn-sm" data-advanced-section="${key}" aria-pressed="${key === settingsView.advancedSection}">${label}</button>`).join("")}</nav><div class="config-grid">${sections.map(([key, title]) => editableConfigSection(title, key, key === "analysis" ? ["auto_start"] : [])).join("")}</div>`;
+}
 function drawSettings() {
   const view = settingsView,
     c = view.config,
@@ -911,9 +922,8 @@ function drawSettings() {
       editableConfigSection("全局发布默认值", "publication") +
       '<p class="hint">标题模板支持 {title}、{streamer}、{room}、{date}。空分区继承上传默认分区。单条成片修改不会覆盖默认值。</p><a class="btn btn-secondary" href="#/streamer">编辑主播发布默认值</a>';
   else if (view.tab === "advanced")
-    body = notice("高级参数保存后重启相关服务生效，已开始任务继续使用原配置。") +
-      `<div class="config-grid">${editableConfigSection("AI 分析", "mimo")}${editableConfigSection("候选召回", "burst")}${editableConfigSection("质量门", "quality")}${editableConfigSection("转写与对齐", "subtitle")}${editableConfigSection("分析参数", "analysis", ["auto_start"])}${editableConfigSection("转写性能", "multi_modal")}${editableConfigSection("Worker", "worker")}${editableConfigSection("源录播", "video")}${editableConfigSection("上传性能", "upload")}</div>` +
-      `<details class="diagnostics"><summary>本地依赖与模型诊断</summary><p>设备可见和模型缓存不等于推理成功。</p><pre>${htmlEscape(JSON.stringify({asr: c.asr, diagnostics: c.diagnostics}, null, 2))}</pre></details>`;
+    body = notice("高级参数按用途分组。修改草稿会在切换分组时保留，仍需点击底部“保存更改”。") +
+      `<div class="settings-advanced-body">${advancedSettingsHTML()}</div>`;
   else
     body = subtitleStyleSettingsHTML(s.edit) + notice("保存立即用于新片段。已有片段需应用默认样式并重新生成成片；已批准成片受保护。");
   document.getElementById("main").innerHTML =
@@ -939,6 +949,10 @@ function drawSettings() {
   document.getElementById("settings-save-all").onclick = saveSettingsChanges;
   updateSettingsSaveBar();
   document.getElementById("runtime-refresh").onclick = renderRuntimeSettings;
+  document.querySelectorAll("[data-advanced-section]").forEach(button => button.onclick = () => {
+    view.advancedSection = button.dataset.advancedSection;
+    drawSettings();
+  });
   document.querySelectorAll("[data-settings-tab],[data-settings-jump]").forEach(
     (b) =>
       (b.onclick = () => {

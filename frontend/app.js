@@ -7,6 +7,49 @@ const PAGES = {
   recycle: renderSourceRecycle,
   settings: renderRuntimeSettings,
 };
+function bindTabInteractions(root) {
+  root.querySelectorAll('[role="tablist"]').forEach(list => {
+    if (list.dataset.keyboardBound) return;
+    list.dataset.keyboardBound = 'true';
+    const tabs = [...list.querySelectorAll('[role="tab"]')];
+    const update = () => tabs.forEach(tab => {
+      tab.tabIndex = tab.getAttribute('aria-selected') === 'true' ? 0 : -1;
+    });
+    update();
+    list.addEventListener('click', update);
+    list.addEventListener('keydown', event => {
+      const index = tabs.indexOf(event.target);
+      if (index < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 :
+        (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].click();
+      tabs[next].focus();
+    });
+  });
+}
+function enhancePage(root) {
+  bindTabInteractions(root);
+  root.querySelectorAll('tr[data-room-select], tr[data-publish-row], tr[data-lifecycle-row]').forEach(row => {
+    row.tabIndex = 0;
+    row.setAttribute('aria-selected', String(row.classList.contains('selected')));
+    row.addEventListener('click', () => {
+      if (!document.getElementById('main').contains(row)) return;
+      const selected = document.querySelector(`[data-room-select="${row.dataset.roomSelect}"], [data-publish-row="${row.dataset.publishRow}"], [data-lifecycle-row="${row.dataset.lifecycleRow}"]`);
+      selected?.focus({preventScroll: true});
+    });
+    row.addEventListener('keydown', event => {
+      if (event.target !== row || !['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      row.click();
+    });
+  });
+}
+const pageObserver = new MutationObserver(() => {
+  const main = document.getElementById('main');
+  if (main) enhancePage(main);
+});
+pageObserver.observe(document.getElementById('main'), {childList: true, subtree: true});
 function route() {
   clearTimeout(reviewTimer);
   clearTimeout(analysisTimer);
