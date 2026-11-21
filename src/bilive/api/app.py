@@ -23,6 +23,7 @@ from bilive.domain.models import (
 from bilive.domain.states import manual_retry_allowed
 from bilive.jobs.action_jobs import ActionConflict, ActionJobStore
 from bilive.media.subtitle_store import SubtitleStore
+from bilive.media.editorial import FeedbackKind
 from bilive.media.cover import CoverDesign, frame_file, render_cover
 from bilive.media.workbench import Workbench, validate_id
 from bilive.worker.locks import LockUnavailable
@@ -210,7 +211,7 @@ class DropRequest(BaseModel):
     expected_revision: int
     reason: str = Field(default='', max_length=1000)
     uncertain: bool = False
-    kind: Literal['content', 'technical', 'duplicate'] = 'content'
+    kind: FeedbackKind = 'content'
 
 
 class StyleRequest(BaseModel):
@@ -222,22 +223,24 @@ class KeepRequest(BaseModel):
     expected_revision: int
     reason: str | None = Field(default=None, max_length=1000)
     uncertain: bool | None = None
+    kind: FeedbackKind | None = None
 
 
 @app.post('/api/segments/{segment_id}/keep')
 def keep_segment(segment_id: str, request: KeepRequest):
-    return workbench.keep(segment_id, request.expected_revision, request.reason, request.uncertain)
+    return workbench.keep(segment_id, request.expected_revision, request.reason, request.uncertain, request.kind)
 
 
 class FeedbackRequest(BaseModel):
     expected_revision: int
     reason: str = Field(default='', max_length=1000)
     uncertain: bool = False
+    kind: FeedbackKind | None = None
 
 
 @app.post('/api/segments/{segment_id}/feedback')
 def save_segment_feedback(segment_id: str, request: FeedbackRequest):
-    return workbench.save_feedback(segment_id, request.expected_revision, request.reason, request.uncertain)
+    return workbench.save_feedback(segment_id, request.expected_revision, request.reason, request.uncertain, request.kind)
 
 
 class MetadataRequest(BaseModel):
@@ -811,14 +814,19 @@ def streamer_experiences(room: str, limit: int = Query(20, ge=1, le=100), offset
 @app.post('/api/streamers/{room}/recommendations/generate')
 def generate_recommendation(room: str):
     from bilive.vendor import streamer_profiles as profiles
-    profiles.generate_streamer_recommendation(workbench.videos, room)
+    from bilive.lifecycle.profiles import sync_review_feedback
+    profiles._validate_room_id(room)
+    with workbench.lock():
+        sync_review_feedback(workbench, room=room, write=True)
+        profiles.generate_streamer_recommendation(workbench.videos, room)
     return streamer_profile(room)
 
 
 @app.post('/api/streamers/{room}/recommendations/{identifier}/apply')
 def apply_recommendation(room: str, identifier: str):
     from bilive.vendor import streamer_profiles as profiles
-    return profiles.apply_streamer_recommendation(workbench.videos, room, identifier)
+    with workbench.lock():
+        return profiles.apply_streamer_recommendation(workbench.videos, room, identifier)
 
 
 @app.get('/api/eagle/source-recordings')

@@ -43,6 +43,9 @@ def editorial_env(tmp_path, monkeypatch):
 
 def automatic(wb):
     s = wb.points(REL, 10, 30, '模型原标题', '')
+    # This fixture borrows point creation for a synthetic model result, not a human selection.
+    from bilive.vendor.streamer_profiles import _experience_path
+    _experience_path(wb.videos).unlink()
     for key in ('editorial_history', 'human_feedback', 'selection_origin'):
         s.pop(key)
     s.update(decision='keep', note='模型觉得完整有反差', quality_score=.9)
@@ -148,6 +151,8 @@ def test_create_and_feedback_are_optional_and_do_not_invalidate_media(editorial_
 @pytest.mark.parametrize('kind,uncertain,expected', [
     ('content', False, 'negative'), ('content', True, 'uncertain'),
     ('technical', False, 'technical_failure'), ('duplicate', False, 'duplicate'),
+    ('publication', False, 'publication_preference'), ('boundary', False, 'boundary_correction'),
+    ('understanding', False, 'understanding_correction'), ('mixed', False, 'mixed_feedback'),
 ])
 def test_finished_review_keeps_history_and_distinguishes_disposal_reasons(editorial_env, kind, uncertain, expected):
     wb, client = editorial_env
@@ -161,7 +166,9 @@ def test_finished_review_keeps_history_and_distinguishes_disposal_reasons(editor
     assert record['human_reason'] == '我的原话'
     assert record['editorial_history'] == dropped['editorial_history']
     assert record['model_judgment'] == 'keep'
-    assert streamer_evidence_summary(wb.videos, '123')['sample_size'] == (expected == 'negative')
+    evidence = streamer_evidence_summary(wb.videos, '123')
+    assert evidence['negative_count'] == (expected == 'negative')
+    assert evidence['sample_size'] == (expected in {'negative', 'publication_preference', 'boundary_correction', 'understanding_correction'})
 
 
 def test_rejected_writes_cannot_append_history(editorial_env):
@@ -179,3 +186,113 @@ def test_rejected_writes_cannot_append_history(editorial_env):
         'expected_revision': s['revision'], 'reason': '字' * 1001,
     }).status_code == 422
     assert path.read_bytes() == before
+
+
+def test_feedback_is_collected_immediately_and_finish_does_not_duplicate(editorial_env):
+    wb, client = editorial_env
+    s = automatic(wb)
+    dropped = post(client, s, 'drop', reason='有意思，但不想发布', kind='publication')
+    rows = read_experiences(wb.videos)
+    assert len(rows) == 1
+    assert rows[0]['experience_type'] == 'publication_preference'
+    assert rows[0]['model_judgment'] == 'keep'
+    assert rows[0]['human_reason'] == '有意思，但不想发布'
+    assert SourceReview(wb).load(task_id_from_source_relpath(REL)) is None
+    SourceReview(wb).finish(task_id_from_source_relpath(REL), no_content=True)
+    assert len(read_experiences(wb.videos)) == 1
+    assert dropped['state'] == 'dropped'
+
+
+def test_edit_versions_count_once_and_never_turn_a_trim_into_a_quality_negative(editorial_env):
+    wb, client = editorial_env
+    s = automatic(wb)
+    s = post(client, s, 'keep', reason='短梗可留')
+    for end in (34, 33):
+        s = wb.points(REL, 12, end, s['title'], '保留最后回应', s['segment_id'], s['revision'])
+    summary = streamer_evidence_summary(wb.videos, '123')
+    assert summary['sample_size'] == summary['correction_count'] == 1
+    assert summary['positive_count'] == summary['negative_count'] == 0
+    assert len(read_experiences(wb.videos)) == 3
+    kept = post(client, s, 'keep')
+    summary = streamer_evidence_summary(wb.videos, '123')
+    assert summary['sample_size'] == summary['positive_count'] == 1
+    assert summary['correction_count'] == 0
+    assert kept['source_end'] == 33
+
+
+def test_backfill_after_source_cleanup_preserves_classification_and_is_idempotent(editorial_env):
+    from bilive.lifecycle.profiles import sync_review_feedback
+    from bilive.vendor.streamer_profiles import _experience_path
+    wb, client = editorial_env
+    s = automatic(wb)
+    dropped = post(client, s, 'drop', reason='有趣但不想发布这种争议内容')
+    _experience_path(wb.videos).unlink()  # Simulate a historical revision collected before this change.
+    wb.source(REL).unlink()
+    before = (wb.root / f"{s['segment_id']}.json").read_bytes()
+    classification = {s['segment_id']: {'kind': 'publication', 'basis': '用户明确确认有趣但不想发布'}}
+    preview = sync_review_feedback(wb, classifications=classification)
+    assert preview['segments'] == 1 and not _experience_path(wb.videos).exists()
+    for _ in range(2):
+        sync_review_feedback(wb, classifications=classification, write=True)
+    # Finishing the same saved revision cannot overwrite an explicit reviewed classification.
+    record_review(wb, REL, 'task', [dropped], '')
+    rows = read_experiences(wb.videos)
+    assert len(rows) == 1 and rows[0]['experience_type'] == 'publication_preference'
+    assert rows[0]['classification'] == classification[s['segment_id']]
+    assert (wb.root / f"{s['segment_id']}.json").read_bytes() == before
+
+
+def test_feedback_category_survives_optional_keep_and_invalid_kind_changes_nothing(editorial_env):
+    wb, client = editorial_env
+    s = automatic(wb)
+    s = post(client, s, 'feedback', reason='读的是观众留言', kind='understanding')
+    s = post(client, s, 'keep')
+    assert s['human_feedback']['kind'] == 'understanding'
+    count = len(read_experiences(wb.videos))
+    assert client.post(f"/api/segments/{s['segment_id']}/feedback", json={
+        'expected_revision': s['revision'], 'reason': 'bad', 'kind': 'invented',
+    }).status_code == 422
+    assert len(read_experiences(wb.videos)) == count
+
+
+def test_generate_endpoint_backfills_human_history_and_never_applies_guidance(editorial_env):
+    from bilive.vendor.streamer_profiles import _experience_path, read_streamer_profile
+    wb, client = editorial_env
+    automatic(wb)
+    assert not _experience_path(wb.videos).exists()
+    # Unreviewed model keep is not backfilled as human approval.
+    response = client.post('/api/streamers/123/recommendations/generate')
+    assert response.status_code == 200
+    assert not read_experiences(wb.videos)
+    for i in range(5):
+        s = wb.points(REL, 40+i*3, 42+i*3, f'人工补选{i}', '')
+        if i == 4:
+            wb.drop(s['segment_id'], s['revision'], '有趣但不想发', kind='publication')
+    _experience_path(wb.videos).unlink()
+    response = client.post('/api/streamers/123/recommendations/generate')
+    assert response.status_code == 200
+    data = response.json()
+    assert data['evidence']['sample_size'] == 5
+    assert data['evidence']['positive_count'] == 4
+    assert data['evidence']['negative_count'] == 0
+    assert data['recommendations'][-1]['status'] == 'pending'
+    assert read_streamer_profile(wb.videos, '123')['approved_guidance'] == ''
+    count = len(read_experiences(wb.videos))
+    assert client.post('/api/streamers/123/recommendations/generate').status_code == 200
+    assert len(read_experiences(wb.videos)) == count
+
+
+def test_curated_lesson_is_separate_from_human_quote_and_survives_plain_backfill(editorial_env):
+    from bilive.lifecycle.profiles import record_segment_review, sync_review_feedback
+    from bilive.vendor.streamer_profiles import latest_experiences
+    wb, client = editorial_env
+    s = post(client, automatic(wb), 'keep')
+    record_segment_review(wb, s, classification={'kind': 'content', 'review_note': '真正主线是观众选了笑话而非八卦', 'basis': '本聊天用户已确认'})
+    sync_review_feedback(wb, write=True)
+    latest = latest_experiences(read_experiences(wb.videos))[0]
+    assert latest['human_reason'] == latest['note'] == ''
+    assert latest['review_note'] == '真正主线是观众选了笑话而非八卦'
+    assert latest['conclusion'] == 'positive'
+    before = len(read_experiences(wb.videos))
+    record_segment_review(wb, s, classification={'kind': 'content', 'review_note': latest['review_note'], 'basis': '本聊天用户已确认'})
+    assert len(read_experiences(wb.videos)) == before

@@ -64,6 +64,14 @@ class Workbench:
         tmp.write_text(json.dumps(segment, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
 
+    def save_review(self, segment: dict) -> None:
+        self.save(segment)
+        from bilive.lifecycle.profiles import record_segment_review
+        record = record_segment_review(self, segment)
+        if record:
+            from bilive.vendor.streamer_profiles import generate_streamer_recommendation
+            generate_streamer_recommendation(self.videos, record['room_id'])
+
     def list(self, source: str) -> list[dict]:
         return [s for p in sorted(self.root.glob("*.json"))
                 if (s := self.load(p.stem))["source_relpath"] == source]
@@ -171,7 +179,7 @@ class Workbench:
                 title = s['title']
             s.update(source_start=start, source_end=end, title=title)
             record_edit(s, action, before, human)
-            self.save(s)
+            self.save_review(s)
             return s
 
     @staticmethod
@@ -180,7 +188,7 @@ class Workbench:
             raise ActionConflict("revision conflict; reload the segment and keep your draft")
 
     def keep(self, sid: str, expected: int, reason: str | None = None,
-             uncertain: bool | None = None) -> dict:
+             uncertain: bool | None = None, kind: str | None = None) -> dict:
         """Confirm the editorial decision without changing the media revision."""
         with self.lock():
             s = self.load(sid)
@@ -189,25 +197,27 @@ class Workbench:
             before = snapshot(s)
             previous = s.get('human_feedback', {})
             human = feedback(previous.get('reason', '') if reason is None else reason,
-                             previous.get('uncertain', False) if uncertain is None else uncertain)
+                             previous.get('uncertain', False) if uncertain is None else uncertain,
+                             previous.get('kind', 'content') if kind is None else kind)
             s['technical_failure'] = bool(s.get('technical_failure') or s.get('processing_error') or s['decision'] == 'judge_failed')
             s.update(decision='manual_keep', human_reviewed=True, human_feedback=human)
             if s.get('state') == 'needs_review':
                 s['state'] = 'awaiting_publish' if self.valid_final(s) else 'needs_finalize'
             record_edit(s, 'keep', before, human)
-            self.save(s)
+            self.save_review(s)
             return self.detail(sid)
 
-    def save_feedback(self, sid: str, expected: int, reason: str, uncertain: bool = False) -> dict:
-        human = feedback(reason, uncertain)
+    def save_feedback(self, sid: str, expected: int, reason: str, uncertain: bool = False,
+                      kind: str | None = None) -> dict:
         with self.lock():
             s = self.load(sid)
             self.check_revision(s, expected)
             self.editable(s)
+            human = feedback(reason, uncertain, s.get('human_feedback', {}).get('kind', 'content') if kind is None else kind)
             before = snapshot(s)
             s['human_feedback'] = human
             record_edit(s, 'feedback', before, human)
-            self.save(s)
+            self.save_review(s)
             return self.detail(sid)
 
     def save_metadata(self, sid: str, expected: int, title: str, description: str, tags: list[str], tid: int | None = None,
@@ -268,7 +278,7 @@ class Workbench:
             if s.get('final_revision') == expected:
                 s['final_revision'] = s['revision']
             record_edit(s, 'metadata', before, human)
-            self.save(s)
+            self.save_review(s)
             return self.detail(sid)
 
     def save_subtitles(self, sid: str, expected: int, lines: list[SubtitleLine]) -> dict:
@@ -371,7 +381,7 @@ class Workbench:
             s.update(decision='drop', state='dropped', drop_reason=human['reason'],
                      human_feedback=human, revision=s['revision'] + 1)
             record_edit(s, 'drop', before, human)
-            self.save(s)
+            self.save_review(s)
             return s
 
     def detail(self, sid: str) -> dict:

@@ -1,6 +1,11 @@
 """Human decisions and edit snapshots, persisted atomically with the segment."""
 from copy import deepcopy
 from datetime import datetime, timezone
+from typing import Literal
+
+
+FeedbackKind = Literal['content', 'technical', 'duplicate', 'publication', 'boundary', 'understanding', 'mixed']
+FEEDBACK_KINDS = frozenset(FeedbackKind.__args__)
 
 
 SNAPSHOT_FIELDS = (
@@ -16,7 +21,7 @@ def snapshot(segment: dict) -> dict:
 
 
 def feedback(reason: str, uncertain: bool = False, kind: str = 'content') -> dict:
-    if kind not in {'content', 'technical', 'duplicate'}:
+    if kind not in FEEDBACK_KINDS:
         raise ValueError('invalid feedback kind')
     reason = reason.strip()
     if len(reason) > 1000:

@@ -1,6 +1,5 @@
 """Pinned streamer profile and recommendation rules; persistence lock adapted."""
 from __future__ import annotations
-from collections import Counter
 from datetime import datetime, timezone
 import json, os, re, threading, uuid
 from pathlib import Path
@@ -8,6 +7,7 @@ from typing import Any, Callable
 from bilive.worker.locks import ProcessLock
 from bilive.vendor.subtitle_style import SubtitleStyle
 VALID_CONTENT_EXPERIENCE_TYPES = frozenset({'positive','negative','missed_segment_positive'})
+CORRECTION_TYPES = frozenset({'editorial_correction', 'boundary_correction', 'understanding_correction'})
 _TASK_ID_RE = re.compile(r'^[A-Za-z0-9_-]+$')
 _ROOM_ID_RE = re.compile(r'^\d+$')
 def _state_lock(path):
@@ -121,7 +121,37 @@ def is_duplicate_experience(item: dict[str, Any]) -> bool:
 
 def _is_content_experience(item: dict[str, Any]) -> bool:
     return (item.get('experience_type') in VALID_CONTENT_EXPERIENCE_TYPES
-            and not is_duplicate_experience(item))
+            and not is_duplicate_experience(item)
+            # Legacy content_review rows can simply mirror a model verdict and
+            # explanation. Without human provenance they do not calibrate quality.
+            and not (item.get('reason_type') == 'content_review'
+                     and not item.get('human_decision') and not item.get('human_reason')
+                     and not item.get('human_feedback')))
+
+
+def latest_experiences(records: list[dict]) -> list[dict]:
+    """Keep history in the log, but count only the latest judgment of a segment."""
+    latest = {}
+    for index, item in enumerate(records):
+        key = (str(item.get('room_id')), str(item.get('segment_id') or f'row:{index}'))
+        version = (int(item.get('revision') or 0), int(item.get('editorial_sequence') or 0), bool(item.get('classification')))
+        previous = latest.get(key)
+        if previous is None or version >= previous[0]:
+            latest[key] = (version, index, item)
+    return [entry[2] for entry in sorted(latest.values(), key=lambda entry: entry[1])]
+
+
+def _recommendation_experiences(videos_root, room):
+    return [item for item in latest_experiences(read_experiences(videos_root, room_id=room))
+            if not is_duplicate_experience(item) and (
+                _is_content_experience(item) or item.get('experience_type') in CORRECTION_TYPES
+                or item.get('experience_type') == 'publication_preference')
+            and (item.get('experience_type') != 'editorial_correction'
+                 or item.get('human_reason') or item.get('editorial_reason')
+                 or any(edit.get('action') in {'range', 'metadata'} and any(
+                     edit.get('before', {}).get(key) != edit.get('after', {}).get(key)
+                     for key in ('source_start', 'source_end', 'title', 'description'))
+                     for edit in item.get('editorial_history', [])))]
 
 
 def streamer_evidence_summary(
@@ -133,25 +163,24 @@ def streamer_evidence_summary(
     """Return the read-only evidence gate shown before recommendations."""
     room = _validate_room_id(room_id)
     required = max(1, int(min_samples))
-    experiences = read_experiences(videos_root, room_id=room)
-    valid = [
-        item
-        for item in experiences
-        if _is_content_experience(item)
-    ]
+    valid = _recommendation_experiences(videos_root, room)
     positive = [item for item in valid if item.get("conclusion") == "positive"]
     negative = [item for item in valid if item.get("conclusion") == "negative"]
-    ready = len(valid) >= required and bool(positive) and bool(negative)
+    corrections = [item for item in valid if item.get('experience_type') in CORRECTION_TYPES]
+    preferences = [item for item in valid if item.get('experience_type') == 'publication_preference']
+    ready = len(valid) >= required and bool(positive) and bool(negative or corrections or preferences)
     return {
         "evidence_status": "ready" if ready else "insufficient_evidence",
         "sample_size": len(valid),
         "positive_count": len(positive),
         "negative_count": len(negative),
+        "correction_count": len(corrections),
+        "publication_preference_count": len(preferences),
         "minimum_samples": required,
         "message": (
             "证据已达到主播建议生成条件"
             if ready
-            else f"证据不足：至少需要 {required} 条有效人工样本，且同时包含正、负样本"
+            else f"证据不足：至少需要 {required} 条有效人工样本，包含保留样本及废弃或纠正依据"
         ),
     }
 
@@ -163,12 +192,7 @@ def generate_streamer_recommendation(
     min_samples: int = 5,
 ) -> dict[str, Any]:
     room = _validate_room_id(room_id)
-    experiences = read_experiences(videos_root, room_id=room)
-    valid = [
-        item
-        for item in experiences
-        if _is_content_experience(item)
-    ]
+    valid = _recommendation_experiences(videos_root, room)
     positive = [
         item
         for item in valid
@@ -187,23 +211,49 @@ def generate_streamer_recommendation(
     if base["evidence_status"] != "ready":
         return base
 
-    # Older records can contain model explanations in note. Only use an explicit
-    # human reason, or the legacy reason_type, rather than presenting those as feedback.
-    reason_counts = Counter()
-    for item in negative:
-        reason = str(item.get('human_reason') or item.get('reason_type') or '').strip()
-        if reason and reason != 'content_review':
-            if not item.get('human_reason') and str(item.get('note') or '').startswith(reason):
-                reason = item['note']
-            reason_counts[reason] += 1
-    reasons = [item for item, _count in reason_counts.most_common(3)]
+    def example(item):
+        # Older notes may be generated model explanations, not human reasons.
+        reason = ('复盘补充：' + item['review_note'] if item.get('review_note') else
+                  str(item.get('human_reason') or item.get('editorial_reason') or item.get('reason_type') or '').strip())
+        if reason == 'content_review':
+            reason = ''
+        if reason and not item.get('human_reason') and str(item.get('note') or '').startswith(reason):
+            reason = item['note']
+        if not reason:
+            for edit in reversed(item.get('editorial_history', [])):
+                before, after = edit.get('before', {}), edit.get('after', {})
+                changed = [f'{key}: {str(before.get(key))[:55]} → {str(after.get(key))[:55]}'
+                           for key in ('source_start', 'source_end', 'title', 'description')
+                           if before.get(key) != after.get(key) and key in before]
+                if changed:
+                    reason = '人工修改 ' + '；'.join(changed)
+                    break
+        title = str(item.get('title') or item.get('source_rel_path') or '人工样本')[:60]
+        return f'- 《{title}》：{reason[:120] or "未填写人工理由，不推测原因"}'
+
     guidance = (
-        "结合当前音画和人工保留、废弃样本，核对人工反馈所指的具体问题。"
-        "保留必要铺垫和最后有效回应，不按关键词或固定时长一律删除。"
+        "先还原谁发出弹幕/SC、主播如何回应、事件主线和具体观看价值，再定位必要铺垫和最后有效回应。"
+        "完整、有情绪或弹幕多本身不是观看价值。核对音画，不把主动表演写成故障，不把引用当主播立场。"
+        "保留语言短梗、视觉、声音及陪伴价值，不按关键词或固定时长一律删除；没有合适内容可不选。"
+        "人工保留校准取舍，不证明原标题的事实；文案仍须核对当前片段。"
     )
-    if reasons:
-        guidance += '\n人工废弃理由（仅用于核对相似情况，不代表所有此类话题都应删除）：\n'
-        guidance += '\n'.join(f'- {reason[:500]}' for reason in reasons)
+    groups = [
+        ('人工保留对照，不得因新规则误删', positive),
+        ('人工内容废弃，仅核对相似问题，不扩大为话题禁令', negative),
+        ('人工范围/理解纠正，与内容无聊分开', [item for item in valid if item.get('experience_type') in CORRECTION_TYPES]),
+        ('发布取舍，与内容好坏分开，不自动推断所有争议内容禁用', [item for item in valid if item.get('experience_type') == 'publication_preference']),
+    ]
+    for label, items in groups:
+        if items:
+            # Reserve one example for the latest decision, even when historical
+            # calibration has review notes. Keep a distinct calibrated control.
+            selected = items[-1:]
+            if len(items) > 1:
+                controls = [item for item in items[:-1] if item.get('review_note')]
+                selected.insert(0, controls[-1] if controls else items[-2])
+            guidance += '\n' + label + '：\n' + '\n'.join(example(item) for item in selected)
+    # The production judge reads at most 2000 characters; keep the complete candidate visible.
+    guidance = guidance[:2000]
     evidence_ids = [str(item.get("experience_id") or "") for item in valid]
 
     def mutate(data: dict[str, Any]) -> dict[str, Any]:
@@ -212,18 +262,26 @@ def generate_streamer_recommendation(
             recommendations = []
         for item in recommendations:
             if (isinstance(item, dict) and item.get("evidence_ids") == evidence_ids
-                    and item.get('changes', {}).get('approved_guidance') == guidance):
+                    and item.get('changes', {}).get('approved_guidance') == guidance
+                    and item.get('method_version') == 2
+                    and item.get('status') in {'pending', 'applied'}):
                 return data
+        for item in recommendations:
+            if isinstance(item, dict) and item.get('status') == 'pending':
+                item['status'] = 'superseded'
         recommendations.append(
             {
                 "recommendation_id": uuid.uuid4().hex,
                 "room_id": room,
                 "created_at": _now(),
                 "status": "pending",
+                "method_version": 2,
                 "evidence_status": "ready",
                 "sample_size": len(valid),
                 "positive_count": len(positive),
                 "negative_count": len(negative),
+                "correction_count": base['correction_count'],
+                "publication_preference_count": base['publication_preference_count'],
                 "evidence_ids": evidence_ids,
                 "basis": [
                     {
@@ -240,6 +298,14 @@ def generate_streamer_recommendation(
                         "reason": item.get("reason"),
                         "note": item.get("note"),
                         "human_reason": item.get("human_reason"),
+                        "editorial_reason": item.get('editorial_reason'),
+                        "title": item.get('title'),
+                        "human_feedback": item.get('human_feedback'),
+                        "human_decision": item.get('human_decision'),
+                        "editorial_history": item.get('editorial_history', []),
+                        "revision": item.get('revision'),
+                        "classification": item.get('classification'),
+                        "review_note": item.get('review_note'),
                     }
                     for item in valid
                 ],
@@ -428,8 +494,12 @@ def apply_streamer_recommendation(
             raise FileNotFoundError("Recommendation not found")
         profile = {**default_streamer_profile(room), **(state.get("profile") or {})}
         if str(recommendation.get("status") or "") != "applied":
+            current_ids = [str(item.get('experience_id') or '') for item in _recommendation_experiences(videos_root, room)]
+            if recommendation.get('status') != 'pending' or recommendation.get('evidence_ids') != current_ids:
+                raise ValueError('建议依据已更新，请重新生成后核对')
             changes = recommendation.get("changes") or {}
             if "approved_guidance" in changes:
+                recommendation['previous_guidance'] = profile.get('approved_guidance', '')
                 profile["approved_guidance"] = str(
                     changes.get("approved_guidance") or ""
                 )

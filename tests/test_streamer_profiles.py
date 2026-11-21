@@ -145,6 +145,75 @@ def test_recommendation_can_refresh_old_guidance_with_the_same_evidence(tmp_path
     assert len(profiles.generate_streamer_recommendation(tmp_path, '123')['recommendations']) == 2
 
 
+def test_versions_do_not_inflate_evidence_and_old_positive_is_superseded_by_uncertain(tmp_path):
+    for revision in range(1, 9):
+        profiles.append_experience(tmp_path, {'room_id': '123', 'segment_id': 'same',
+            'revision': revision, 'editorial_sequence': revision, 'experience_type': 'positive',
+            'conclusion': 'positive', 'dedupe_key': str(revision)})
+    assert profiles.streamer_evidence_summary(tmp_path, '123')['sample_size'] == 1
+    assert profiles.generate_streamer_recommendation(tmp_path, '123')['evidence_status'] == 'insufficient_evidence'
+    profiles.append_experience(tmp_path, {'room_id': '123', 'segment_id': 'same', 'revision': 9,
+        'experience_type': 'uncertain', 'conclusion': 'uncertain'})
+    assert profiles.streamer_evidence_summary(tmp_path, '123')['positive_count'] == 0
+    # A delayed older revision cannot become authoritative again.
+    profiles.append_experience(tmp_path, {'room_id': '123', 'segment_id': 'same', 'revision': 2,
+        'experience_type': 'positive', 'conclusion': 'positive'})
+    assert profiles.streamer_evidence_summary(tmp_path, '123')['sample_size'] == 0
+
+
+def test_legacy_model_verdict_without_human_provenance_does_not_calibrate_quality(tmp_path):
+    for i in range(4):
+        sample(tmp_path, '123', i, 'positive')
+    profiles.append_experience(tmp_path, {'room_id': '123', 'segment_id': 'legacy-model',
+        'experience_type': 'negative', 'conclusion': 'negative', 'reason_type': 'content_review',
+        'note': '模型认为好笑；pipeline trim gate failed', 'model_judgment': 'drop'})
+    assert profiles.streamer_evidence_summary(tmp_path, '123')['negative_count'] == 0
+    assert profiles.generate_streamer_recommendation(tmp_path, '123')['evidence_status'] == 'insufficient_evidence'
+    profiles.append_experience(tmp_path, {'room_id': '123', 'segment_id': 'confirmed', 'revision': 1,
+        'experience_type': 'negative', 'conclusion': 'negative', 'reason_type': 'content_review',
+        'human_decision': 'drop', 'human_feedback': {'reason': '', 'kind': 'content'}})
+    assert profiles.streamer_evidence_summary(tmp_path, '123')['negative_count'] == 1
+
+
+def test_recommendation_separates_publication_preference_and_keeps_positive_controls(tmp_path):
+    titles = ['就是想法', '偷跑1秒钟曲绘构图', '人生不过三万天', '雪狐的ASMR']
+    for i, title in enumerate(titles):
+        profiles.append_experience(tmp_path, {'room_id': '123', 'segment_id': str(i), 'title': title,
+            'experience_type': 'positive', 'conclusion': 'positive', 'revision': 1})
+    profiles.append_experience(tmp_path, {'room_id': '123', 'segment_id': 'preference',
+        'title': '拉黑自动续费', 'experience_type': 'publication_preference', 'conclusion': 'publication_preference',
+        'human_reason': '确实很有意思，但不想发布争议内容', 'original_note': '模型宣称大快人心', 'revision': 1})
+    summary = profiles.streamer_evidence_summary(tmp_path, '123')
+    assert summary['sample_size'] == 5 and summary['negative_count'] == 0
+    assert summary['publication_preference_count'] == 1 and summary['positive_count'] == 4
+    r = profiles.generate_streamer_recommendation(tmp_path, '123')['recommendations'][-1]
+    assert {row['title'] for row in r['basis']}.issuperset(titles)
+    guidance = r['changes']['approved_guidance']
+    assert '发布取舍，与内容好坏分开' in guidance and '确实很有意思' in guidance
+    assert '人工内容废弃' not in guidance and '大快人心' not in guidance
+    assert len(guidance) <= 2000
+    assert profiles.read_streamer_profile(tmp_path, '123')['approved_guidance'] == ''
+
+
+def test_new_judgment_invalidates_pending_application_and_remembers_previous_guidance(tmp_path):
+    for i in range(4):
+        sample(tmp_path, '123', i, 'positive')
+    bad = profiles.append_experience(tmp_path, {'room_id': '123', 'segment_id': 'negative', 'revision': 1,
+        'experience_type': 'negative', 'conclusion': 'negative', 'human_reason': '没意思'})
+    r = profiles.generate_streamer_recommendation(tmp_path, '123')['recommendations'][-1]
+    profiles.append_experience(tmp_path, {**bad, 'experience_id': 'new-feedback', 'revision': 2,
+        'experience_type': 'boundary_correction', 'conclusion': 'boundary_correction', 'human_reason': '后续还有回应'})
+    with pytest.raises(ValueError, match='建议依据已更新'):
+        profiles.apply_streamer_recommendation(tmp_path, '123', r['recommendation_id'])
+    state = profiles.generate_streamer_recommendation(tmp_path, '123')
+    assert state['recommendations'][-2]['status'] == 'superseded'
+    new = state['recommendations'][-1]
+    assert new['negative_count'] == 0 and new['correction_count'] == 1
+    profiles.patch_streamer_profile(tmp_path, '123', {'approved_guidance': '此前人工批准的指导'})
+    applied = profiles.apply_streamer_recommendation(tmp_path, '123', new['recommendation_id'])
+    assert applied['recommendation']['previous_guidance'] == '此前人工批准的指导'
+
+
 def test_subtitle_style_is_written_and_rejects_injection(tmp_path):
     subs=SubtitleStore(tmp_path/'subtitles')
     subs.save('segment',2,[SubtitleLine(1,0,1,'字幕')],1)

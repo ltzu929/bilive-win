@@ -466,7 +466,7 @@ function updateReviewActions() {
   const dirty = review.unsaved || review.styleUnsaved || review.rangeUnsaved;
   const draftNames = [review.unsaved && "字幕", review.styleUnsaved && "样式", review.rangeUnsaved && "范围"].filter(Boolean).join("、");
   const locked = s.publish_approval || s.active_job || s.state === "dropped" || review.savingSubtitles;
-  for (const id of ['review-human-reason', 'review-human-uncertain', 'review-feedback-save']) {
+  for (const id of ['review-human-reason', 'review-human-uncertain', 'review-human-kind', 'review-feedback-save']) {
     const control = document.getElementById(id);
     if (control) control.disabled = !!(locked || review.lifecycle?.review_state === 'review_complete');
   }
@@ -859,7 +859,7 @@ function reviewMarkup(s, task, lines, initial) {
     (s ? dialogHTML(
       "drop-dialog",
       "废弃当前片段",
-      `<p>废弃“${htmlEscape(s.title || "当前片段")}”后，本片段停止成片和发布，并撤回尚未批准的成片暂存。源录播保留。</p><label class="field">废弃类型<select id="review-drop-kind"><option value="content">内容不想留</option><option value="duplicate">已切过 / 重复版本</option><option value="technical">技术问题，与内容好坏无关</option></select></label><label class="field">废弃原因（选填）<input id="review-drop-reason" maxlength="1000" placeholder="例如：只是交代经过，没有想看的反应"></label><label class="editorial-check"><input id="review-drop-uncertain" type="checkbox">拿不准，不作为明确好坏样本</label><div class="dialog-actions"><button id="review-drop" class="btn btn-primary">确认废弃</button></div>`,
+      `<p>废弃“${htmlEscape(s.title || "当前片段")}”后，本片段停止成片和发布，并撤回尚未批准的成片暂存。源录播保留。</p><label class="field">废弃类型<select id="review-drop-kind">${editorialKindOptions('content')}</select></label><label class="field">废弃原因（选填）<input id="review-drop-reason" maxlength="1000" placeholder="例如：只是交代经过，没有想看的反应"></label><label class="editorial-check"><input id="review-drop-uncertain" type="checkbox">拿不准，不作为明确好坏样本</label><div class="dialog-actions"><button id="review-drop" class="btn btn-primary">确认废弃</button></div>`,
     ) : "") +
     dialogHTML(
       "points-dialog",
@@ -1245,7 +1245,7 @@ function drawManualWorkbench() {
   };
   const styleEditor = document.getElementById("review-style");
   document.getElementById('content-panel').insertAdjacentHTML('beforeend', `<div id="review-editorial-history">${editorialHistoryHTML(s)}</div>`);
-  for (const id of ['review-human-reason', 'review-human-uncertain']) document.getElementById(id).oninput = () => {
+  for (const id of ['review-human-reason', 'review-human-uncertain', 'review-human-kind']) document.getElementById(id).oninput = () => {
     try {
       localStorage.setItem(editorialDraftKey(s), JSON.stringify({revision: s.revision, ...editorialInput()}));
       setMessage('editorial-feedback-status', '备注尚未保存，保留时一起保存，也可单独保存。');
@@ -1573,10 +1573,22 @@ async function watchReviewJob(id) {
       );
   }
 }
-const streamerView = { room: "", offset: 0, recordings: [] };
+const streamerView = { room: "", offset: 0, recordings: [], tab: "recommendations", recommendationPage: 0 };
+function profileInsightsHTML(data, experience) {
+  const pageCount = Math.max(1, data.recommendations.length);
+  streamerView.recommendationPage = Math.min(streamerView.recommendationPage, pageCount - 1);
+  const recommendation = data.recommendations[streamerView.recommendationPage];
+  const recommendationHTML = recommendation ? `<article class="profile-recommendation"><p>${htmlEscape(recommendation.changes?.approved_guidance || "无建议内容")}</p><p class="muted">${htmlEscape({pending: "待应用", applied: "已应用", superseded: "已被新建议替代"}[recommendation.status] || recommendation.status)} · ${recommendation.sample_size} 条样本</p><details><summary>查看片段与人工依据</summary><pre>${htmlEscape(JSON.stringify(recommendation.basis, null, 2))}</pre></details><button class="btn btn-secondary" data-apply="${htmlEscape(recommendation.recommendation_id)}" ${recommendation.status !== "pending" ? "disabled" : ""}>人工应用建议</button></article>` : "<p>暂无建议。</p>";
+  const historyHTML = experience.items.map(e => `<article class="profile-experience"><p><strong>${htmlEscape(e.experience_type)}</strong></p><p>${htmlEscape(e.note || "未填写理由")}</p><p class="muted">${htmlEscape(e.source_rel_path)}</p><details><summary>查看源区间与内容证据</summary><pre>${htmlEscape(JSON.stringify(e, null, 2))}</pre></details></article>`).join("") || "<p>暂无已保存的人工审核历史。</p>";
+  return `<aside class="profile-insights"><div class="card"><h2>建议与历史</h2><p>${htmlEscape(data.evidence.message)}</p><p class="hint">有效 ${data.evidence.sample_size} · 保留 ${data.evidence.positive_count} · 内容废弃 ${data.evidence.negative_count} · 纠正 ${data.evidence.correction_count || 0} · 发布取舍 ${data.evidence.publication_preference_count || 0}</p><button id="profile-generate" class="btn btn-secondary">收集人工取舍并生成建议</button>${tabsHTML([["recommendations", `建议 ${data.recommendations.length}`], ["history", `历史 ${experience.total}`]], streamerView.tab, "data-profile-tab")}<div class="profile-tab-content">${streamerView.tab === "history" ? historyHTML : recommendationHTML}</div>${streamerView.tab === "history" ? `<div class="action-row"><button id="experience-prev" class="btn btn-secondary btn-sm" ${streamerView.offset === 0 ? "disabled" : ""}>上一页</button><span class="muted">第 ${Math.floor(streamerView.offset / 5) + 1} / ${Math.max(1, Math.ceil(experience.total / 5))} 页</span><button id="experience-next" class="btn btn-secondary btn-sm" ${streamerView.offset + 5 >= experience.total ? "disabled" : ""}>下一页</button></div>` : `<div class="action-row"><button id="recommendation-prev" class="btn btn-secondary btn-sm" ${streamerView.recommendationPage === 0 ? "disabled" : ""}>上一条</button><span class="muted">${streamerView.recommendationPage + 1} / ${pageCount}</span><button id="recommendation-next" class="btn btn-secondary btn-sm" ${streamerView.recommendationPage + 1 >= pageCount ? "disabled" : ""}>下一条</button></div>`}</div></aside>`;
+}
 async function renderStreamerProfiles() {
   clearTimeout(reviewTimer);
   const current = beginPage("streamer");
+  if (pageParams().get("room") && pageParams().get("room") !== streamerView.room) {
+    streamerView.offset = 0;
+    streamerView.recommendationPage = 0;
+  }
   if (pageParams().get("room")) streamerView.room = pageParams().get("room");
   const main = document.getElementById("main");
   main.innerHTML = pageHead("主播档案", "发布默认值与最近录播") + emptyState("正在读取主播…");
@@ -1609,7 +1621,7 @@ async function loadStreamerProfile() {
     const [data, experience] = await Promise.all([
       reviewAPI(`/api/streamers/${room}/profile`),
       reviewAPI(
-        `/api/streamers/${room}/experiences?offset=${streamerView.offset}&limit=20`,
+        `/api/streamers/${room}/experiences?offset=${streamerView.offset}&limit=5`,
       ),
     ]);
     if (pageKey() !== "streamer" || room !== streamerView.room) return;
@@ -1653,9 +1665,7 @@ async function loadStreamerProfile() {
         )
         .join("")}
       <p>密度键：burst_ratio、burst_window、burst_context、burst_merge_gap、burst_top_n。字幕键：font_name、font_size、margin_v、alignment、outline、primary_colour、outline_colour。空对象使用全局默认值。</p><button class="btn btn-primary" type="submit">保存档案</button></form>
-      <div class="card" style="padding:16px"><h2>建议与证据</h2><p>${htmlEscape(data.evidence.message)}</p><p>有效 ${data.evidence.sample_size} · 正 ${data.evidence.positive_count} · 负 ${data.evidence.negative_count}</p><button id="profile-generate" class="btn btn-secondary">根据已有人工样本生成建议</button>
-      ${data.recommendations.map((r) => `<article><p>${htmlEscape(r.changes?.approved_guidance)}</p><p>状态 ${htmlEscape(r.status)} · 样本 ${r.sample_size}</p><details><summary>查看证据 ID</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(r.evidence_ids, null, 2))}</pre></details><button class="btn btn-secondary" data-apply="${htmlEscape(r.recommendation_id)}" ${r.status === "applied" ? "disabled" : ""}>人工应用建议</button></article>`).join("") || "<p>暂无建议。</p>"}
-      <h2>审核经验（共 ${experience.total} 条）</h2>${experience.items.map((e) => `<article><p>${htmlEscape(e.experience_type)} · ${htmlEscape(e.source_rel_path)}</p><p>${htmlEscape(e.note)}</p><details><summary>查看源区间和内容证据</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(e, null, 2))}</pre></details></article>`).join("") || "<p>暂无已保存的人工审核经验。</p>"}<div class="action-row"><button id="experience-prev" class="btn btn-secondary" ${streamerView.offset === 0 ? "disabled" : ""}>上一页</button><button id="experience-next" class="btn btn-secondary" ${streamerView.offset + 20 >= experience.total ? "disabled" : ""}>下一页</button></div></div></div>`;
+      ${profileInsightsHTML(data, experience)}</div>`;
     const profileForm = document.getElementById("profile-form");
     const styleSelect = document.getElementById('profile-subtitle-preset');
     const styleJSON = profileForm.querySelector('[data-profile="default_subtitle_style"]');
@@ -1759,30 +1769,48 @@ async function loadStreamerProfile() {
         await reviewAPI(`/api/streamers/${room}/profile`, payload);
       });
     };
-    document.getElementById("profile-generate").onclick = () =>
-      action(() =>
-        reviewAPI(`/api/streamers/${room}/recommendations/generate`, {}),
-      );
-    document
-      .querySelectorAll("[data-apply]")
-      .forEach(
-        (b) =>
-          (b.onclick = () =>
-            action(() =>
-              reviewAPI(
-                `/api/streamers/${room}/recommendations/${b.dataset.apply}/apply`,
-                {},
-              ),
-            )),
-      );
-    document.getElementById("experience-prev").onclick = () => {
-      streamerView.offset -= 20;
-      loadStreamerProfile();
+    const redrawInsights = () => {
+      const previous = document.querySelector(".profile-insights");
+      const host = document.createElement("div");
+      host.innerHTML = profileInsightsHTML(data, experience);
+      previous.replaceWith(host.firstElementChild);
+      bindProfileInsights();
     };
-    document.getElementById("experience-next").onclick = () => {
-      streamerView.offset += 20;
-      loadStreamerProfile();
+    const refreshHistory = async () => {
+      const next = await reviewAPI(`/api/streamers/${room}/experiences?offset=${streamerView.offset}&limit=5`);
+      if (pageKey() !== "streamer" || room !== streamerView.room) return;
+      Object.assign(experience, next);
+      redrawInsights();
     };
+    const bindProfileInsights = () => {
+      const insights = document.querySelector(".profile-insights");
+      if (!insights) return;
+      insights.querySelectorAll("[data-profile-tab]").forEach(button => button.onclick = () => {
+        streamerView.tab = button.dataset.profileTab;
+        redrawInsights();
+      });
+      insights.querySelector("#profile-generate").onclick = () =>
+        action(() => reviewAPI(`/api/streamers/${room}/recommendations/generate`, {}));
+      insights.querySelectorAll("[data-apply]").forEach(button => button.onclick = () =>
+        action(() => reviewAPI(`/api/streamers/${room}/recommendations/${button.dataset.apply}/apply`, {})));
+      insights.querySelector("#experience-prev")?.addEventListener("click", () => {
+        streamerView.offset = Math.max(0, streamerView.offset - 5);
+        refreshHistory();
+      });
+      insights.querySelector("#experience-next")?.addEventListener("click", () => {
+        streamerView.offset += 5;
+        refreshHistory();
+      });
+      insights.querySelector("#recommendation-prev")?.addEventListener("click", () => {
+        streamerView.recommendationPage--;
+        redrawInsights();
+      });
+      insights.querySelector("#recommendation-next")?.addEventListener("click", () => {
+        streamerView.recommendationPage++;
+        redrawInsights();
+      });
+    };
+    bindProfileInsights();
   } catch (e) {
     if (!content.isConnected) return;
     content.innerHTML = `<p role="alert">档案不可用：${htmlEscape(e.message)}</p>`;

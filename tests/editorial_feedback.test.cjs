@@ -43,6 +43,19 @@ test('model notes never prefill human feedback; stale drafts are visible for con
   assert.match(html, /checked/);
 });
 
+test('publication and correction categories persist through drafts and submission', () => {
+  const {ctx, storage} = context();
+  ctx.s = {segment_id: 'categories', revision: 3, human_feedback: {kind: 'publication', reason: '有意思但不想发'}};
+  const html = vm.runInContext('editorialFeedbackHTML(s)', ctx);
+  assert.match(html, /value="publication" selected/);
+  assert.match(html, /选段范围/);
+  const nodes = {'review-human-kind': {value: 'publication'}, 'review-human-reason': {value: ' 有意思但不想发 '}, 'review-human-uncertain': {checked: false}};
+  ctx.document = {getElementById: id => nodes[id]};
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(editorialInput())', ctx)), {kind: 'publication', reason: '有意思但不想发', uncertain: false});
+  storage.set('bilive:editorial:categories', JSON.stringify({revision: 3, kind: 'boundary', reason: '后面还有回应'}));
+  assert.match(vm.runInContext('editorialFeedbackHTML(s)', ctx), /value="boundary" selected/);
+});
+
 function submission(ctx) {
   const segment = {segment_id: 'a', source_relpath: '123/session.mp4', revision: 2};
   const controls = ['原标题', '简介', '聊天', '27', '', '', '动态', '原文没有两小时'].map(value => ({value}));
