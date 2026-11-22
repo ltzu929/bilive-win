@@ -166,6 +166,7 @@ const reviewJobStates = {
   failed: "处理失败",
 };
 const actionLabels = {
+  refine_chat: "聊天精剪预览",
   transcribe_subtitles: "字幕识别",
   finalize: "成片生成",
   reburn: "成片重烧",
@@ -175,6 +176,7 @@ const actionLabels = {
   approve_publish: "发布批准",
 };
 let reviewTimer;
+const autoChatPreviews = new Set();
 const stageLabels = {
   candidate_cut: "候选裁剪",
   auxiliary_asr: "辅助转写",
@@ -473,12 +475,17 @@ function updateReviewActions() {
   const rangeReason = document.getElementById('review-range-reason-field');
   if (rangeReason) rangeReason.hidden = !review.rangeUnsaved;
   const subtitleReady = s.subtitles_revision === s.revision && s.subtitles?.length > 0;
+  const proposed = s.chat_draft && chatChanges(s);
+  const chatLocked = dirty || locked || !subtitleReady || review.chatSubmitting ||
+    ["review_complete", "trash_pending"].includes(review.lifecycle?.review_state);
+  document.querySelectorAll('#chat-build, #chat-apply, [data-chat-toggle]').forEach(b => { b.disabled = !!chatLocked; });
+  if (s.active_job?.action === 'refine_chat') setMessage('chat-status', '正在生成带字幕的精剪预览…');
   const finalize = document.getElementById("review-finalize"),
     approve = document.getElementById("review-approve");
   if (finalize) {
     finalize.disabled = !!(dirty || locked || !subtitleReady);
-    finalize.textContent = s.final_valid ? "重新生成成片" : "生成成片";
-    finalize.className = `btn ${!dirty && !locked && subtitleReady && !s.final_valid ? "btn-primary" : "btn-secondary"}`;
+    finalize.textContent = proposed ? "沿用原剪法生成成片" : s.final_valid ? "重新生成成片" : "生成成片";
+    finalize.className = `btn ${!proposed && !dirty && !locked && subtitleReady && !s.final_valid ? "btn-primary" : "btn-secondary"}`;
   }
   if (approve) approve.disabled = !s.publish_approval && !!(dirty || locked || !s.final_valid);
   const keep = document.getElementById("review-keep");
@@ -531,6 +538,7 @@ function updateReviewActions() {
           ? `先保存${draftNames}，再生成成片`
           : !subtitleReady
             ? "先补充并保存当前片段字幕，再生成成片"
+            : proposed ? "精剪方案待采用，可在下方试听或恢复剪点"
             : !s.final_valid
               ? "核对内容与字幕后，生成成片预览"
               : "先播放当前成片，确认后进入投稿页",
@@ -539,7 +547,11 @@ function updateReviewActions() {
     if (button) button.setAttribute("aria-describedby", "review-save-hint");
   setMessage("context-state", s.active_job ? `${actionLabels[s.active_job.action] || "后台任务"} · ${reviewJobStates[s.active_job.status] || s.active_job.status}`
     : !locked && !subtitleReady ? "等待补充 / 确认字幕" : reviewStates[s.state] || s.state);
-  setMessage("context-version", `已保存范围 ${timecode(s.source_start)} – ${timecode(s.source_end)} · 版本 ${s.revision} · ${timecode(s.source_end - s.source_start, true)}`);
+  const sourceDuration = s.source_end - s.source_start;
+  const length = s.chat_cuts?.length
+    ? `源片段 ${timecode(sourceDuration, true)} · 成片 ${timecode(chatOutputTime(sourceDuration, s.chat_cuts), true, true)}`
+    : timecode(sourceDuration, true);
+  setMessage("context-version", `已保存范围 ${timecode(s.source_start)} – ${timecode(s.source_end)} · 版本 ${s.revision} · ${length}`);
   setMessage("context-save", s.state === "dropped" ? "当前片段已废弃"
     : s.publish_approval ? "已批准发布，当前成片受保护"
     : s.active_job ? `${actionLabels[s.active_job.action] || "后台任务"}：${reviewJobStates[s.active_job.status] || s.active_job.status}。完成后可继续。`
@@ -548,6 +560,7 @@ function updateReviewActions() {
     : review.unsaved ? `字幕${review.styleUnsaved ? "和样式" : ""}尚未保存，请点击“${save.textContent}”。`
     : review.styleUnsaved ? `字幕已保存，样式尚未保存，请点击“${save.textContent}”。`
     : !subtitleReady ? `${s.human_reviewed ? "已保留。" : ""}等待补充字幕：${review.tab === "subtitles" ? "识别或手动填写并保存" : "点击“检查字幕”，识别或手动填写并保存"}。当前没有后台任务。`
+    : proposed ? "精剪预览已就绪。核对剪点后，点击「采用这版并生成成片」。"
     : !s.final_valid ? "字幕已保存，等待生成成片：点击“生成成片”。当前没有后台任务。"
     : "成片已生成，预览确认后可进入投稿页。当前没有后台任务。");
   const next = document.getElementById("review-next-step");
@@ -571,7 +584,7 @@ function updateReviewActions() {
     setMessage("context-job", error);
   }
   if (approve) {
-    approve.textContent = s.publish_approval ? "查看发布进度" : "去投稿";
+    approve.textContent = s.publish_approval ? "查看发布进度" : proposed && s.final_valid ? "用当前成片去投稿" : "去投稿";
     approve.className = `btn ${!dirty && !locked && s.final_valid ? "btn-primary" : "btn-secondary"}`;
   }
   if (save) save.className = `btn ${review.tab === "subtitles" && !locked ? "btn-primary" : "btn-secondary"}`;
@@ -757,9 +770,10 @@ function arrangeReviewWorkbench() {
   const finalPanel = document.createElement("div");
   finalPanel.id = "final-panel";
   finalPanel.hidden = review.tab !== "final";
-  finalPanel.innerHTML = '<h3>成片确认</h3><p class="muted">在上方预览当前成片，确认画面和字幕后进入投稿页。</p>';
+  finalPanel.innerHTML = '<h3>成片确认</h3>';
   if (review.segment) {
     const s = review.segment;
+    finalPanel.insertAdjacentHTML('beforeend', chatEditHTML(s));
     finalPanel.insertAdjacentHTML('beforeend', `<p id="final-preview-status" role="status">${s.preview_complete ? "已完整预览" : "尚未完整预览"} · 预览记录不影响人工批准</p>${s.final_valid && s.cover_path ? `<figure><img src="${apiURL(`/api/segments/${s.segment_id}/cover`)}?revision=${s.revision}" alt="当前投稿封面" style="max-width:240px"><figcaption>${s.selected_cover ? "已选投稿封面" : "默认封面"}</figcaption></figure>` : '<p class="muted">生成当前版本成片后，会显示默认封面。</p>'}`);
   }
   if (metadata) finalPanel.append(metadata);
@@ -854,6 +868,7 @@ function reviewMarkup(s, task, lines, initial) {
       [
         ["source", "源录播"],
         ["final", "当前成片"],
+        ...(hasChatPreview(s) ? [["chat", "精剪预览"]] : []),
       ],
       review.media,
       "data-media-tab",
@@ -934,6 +949,18 @@ function drawManualWorkbench() {
   review.rangeUnsaved = false;
   main.innerHTML = reviewMarkup(s, task, lines, initial);
   arrangeReviewWorkbench();
+  if (hasChatPreview(s)) {
+    const media = document.createElement('div');
+    media.id = 'chat-media';
+    media.hidden = true;
+    const player = document.createElement('video');
+    player.id = 'review-chat';
+    player.controls = true;
+    player.preload = 'metadata';
+    player.src = apiURL(`/api/media/chat-preview/${s.segment_id}/${s.chat_draft.id}`);
+    media.append(player);
+    document.getElementById('final-media').after(media);
+  }
   updateRecordingAnalysis();
   if (!s) updateReviewActions();
   restorePageScroll("library");
@@ -966,9 +993,20 @@ function drawManualWorkbench() {
       if (b.dataset.reviewJump === tab) b.setAttribute("aria-current", "step");
       else b.removeAttribute("aria-current");
     });
-    if (tab === "final") document.querySelector('[data-media-tab="final"]')?.click();
+    if (tab === "final") {
+      const media = hasChatPreview(s) && (chatChanges(s) || !s.final_valid) ? 'chat' : 'final';
+      document.querySelector(`[data-media-tab="${media}"]`)?.click();
+    }
     else document.querySelector('[data-media-tab="source"]')?.click();
     updateReviewActions();
+    const build = document.getElementById('chat-build');
+    const key = s && s.segment_id + '/' + s.revision;
+    if (tab === 'final' && s?.chat_kind === 'chat' && build && !build.disabled && build.onclick &&
+        !autoChatPreviews.has(key) && !(s.last_job?.action === 'refine_chat' && s.last_job.revision === s.revision) &&
+        !['pending', 'processing'].includes(review.analysisJob?.status)) {
+      autoChatPreviews.add(key);
+      build.click();
+    }
   };
   document
     .querySelectorAll("[data-review-tab], [data-review-jump]")
@@ -981,6 +1019,8 @@ function drawManualWorkbench() {
           review.media !== "source";
         document.getElementById("final-media").hidden =
           review.media !== "final";
+        const chat = document.getElementById('chat-media');
+        if (chat) chat.hidden = review.media !== 'chat';
         document.querySelectorAll("[data-media-tab]").forEach((t) => {
           t.classList.toggle("active", t === b);
           t.setAttribute("aria-selected", t === b);
@@ -1028,9 +1068,10 @@ function drawManualWorkbench() {
   const evidenceSeek = document.getElementById('review-evidence-seek');
   if (evidenceSeek) evidenceSeek.onclick = () => {
     const segment = review.segment;
-    const isFinal = review.media === 'final';
-    const video = document.getElementById(isFinal ? 'review-final' : 'review-source');
-    if (video) video.currentTime = segment.editorial_suggestion.start - (isFinal ? segment.source_start : 0);
+    const video = document.getElementById('review-' + review.media);
+    const at = segment.editorial_suggestion.start;
+    if (video) video.currentTime = review.media === 'source' ? at : chatOutputTime(at - segment.source_start,
+      review.media === 'chat' ? draftCuts(segment.chat_draft) : segment.chat_cuts);
   };
   document.querySelectorAll("[data-candidate-seek]").forEach(
     (button) =>
@@ -1426,10 +1467,11 @@ function drawManualWorkbench() {
         );
         if (relative >= s.source_end - s.source_start)
           throw new Error("开始时间必须在当前片段内");
-        const video = review.media === "final" ? final : source;
+        const video = document.getElementById('review-' + review.media);
         if (!video || video.readyState < 1)
           throw new Error("当前视频尚未就绪，请等待加载或切换到源录播");
-        video.currentTime = relative + (review.media === "source" ? s.source_start : 0);
+        video.currentTime = review.media === 'source' ? relative + s.source_start
+          : chatOutputTime(relative, review.media === 'chat' ? draftCuts(s.chat_draft) : s.chat_cuts);
         reviewMessage(`已定位到第${e.target.closest("tr").rowIndex}行字幕`);
       } catch (error) {
         reviewMessage(`无法定位：${error.message}`);
@@ -1438,7 +1480,8 @@ function drawManualWorkbench() {
   };
   const highlightSubtitle = video => {
     setMessage("context-position", timecode(video.currentTime));
-    const relative = video.currentTime - (video === source ? s.source_start : 0);
+    const relative = video === source ? video.currentTime - s.source_start
+      : chatSourceTime(video.currentTime, video === final ? s.chat_cuts : draftCuts(s.chat_draft));
     tbody.querySelectorAll("tr").forEach(row => {
       try {
         row.classList.toggle("playing", relative >= parseTimecode(row.querySelector("[data-start]").value) && relative < parseTimecode(row.querySelector("[data-end]").value));
@@ -1446,6 +1489,8 @@ function drawManualWorkbench() {
     });
   };
   source.ontimeupdate = () => highlightSubtitle(source);
+  const chatPlayer = document.getElementById('review-chat');
+  if (chatPlayer) chatPlayer.ontimeupdate = () => highlightSubtitle(chatPlayer);
   if (final) {
     final.ontimeupdate = () => highlightSubtitle(final);
     let savingPreview = false;
@@ -1495,7 +1540,7 @@ function drawManualWorkbench() {
         updateReviewActions();
     }
   };
-  const submit = async (action) => {
+  const submit = async (action, payload = {}, revision = s.revision) => {
     try {
       if (review.rangeUnsaved) throw new Error("请先保存当前范围，再执行后台任务");
       if (review.unsaved || localStorage.getItem(subtitleKey)) {
@@ -1509,7 +1554,7 @@ function drawManualWorkbench() {
       const j = await mutateReview("/api/actions", {
         action,
         target: s.segment_id,
-        revision: s.revision,
+        revision, payload,
       });
       s.active_job = { job_id: j.job_id, status: j.status, action };
       updateReviewActions();
@@ -1520,8 +1565,46 @@ function drawManualWorkbench() {
     } catch (e) {
       if (!stillHere()) return;
       reviewMessage(e.message);
+      if (action === 'refine_chat' || action === 'finalize') setMessage('chat-status', e.message);
     }
   };
+  const chatBuild = document.getElementById('chat-build');
+  const chatAction = async operation => {
+    if (review.chatSubmitting) return;
+    review.chatSubmitting = true;
+    updateReviewActions();
+    try { await operation(); }
+    catch (error) { if (stillHere()) setMessage('chat-status', error.message); }
+    finally { review.chatSubmitting = false; if (stillHere()) updateReviewActions(); }
+  };
+  if (chatBuild) chatBuild.onclick = () => chatAction(() => submit('refine_chat'));
+  function playAt(media, at) {
+    document.querySelector(`[data-media-tab="${media}"]`)?.click();
+    const player = document.getElementById('review-' + media);
+    if (!player) return;
+    player.currentTime = Math.max(0, at);
+    player.play().catch(() => {});
+  }
+  if (chatPlayer) {
+    document.getElementById('chat-play')?.addEventListener('click', () => playAt('chat', 0));
+    for (const button of document.querySelectorAll('[data-chat-toggle], [data-chat-listen], [data-chat-source]')) {
+      button.onclick = () => {
+        const index = Number(button.dataset.chatToggle ?? button.dataset.chatListen ?? button.dataset.chatSource);
+        const cut = s.chat_draft.cuts[index];
+        if (button.hasAttribute('data-chat-toggle')) return chatAction(() =>
+          submit('refine_chat', {preview_id:s.chat_draft.id, toggle:index}));
+        if (button.hasAttribute('data-chat-source')) playAt('source', s.source_start + Math.max(0, cut.start-1));
+        else playAt('chat', chatOutputTime(cut.start, draftCuts(s.chat_draft))-1);
+      };
+    }
+    document.getElementById('chat-apply')?.addEventListener('click', () => chatAction(async () => {
+      const saved = await mutateReview(`/api/segments/${s.segment_id}/chat-edit`,
+        {expected_revision:s.revision, preview_id:s.chat_draft.id});
+      Object.assign(s, saved);
+      await submit('finalize', {}, saved.revision);
+      if (stillHere() && !s.active_job) await renderManualWorkbench();
+    }));
+  }
   document.getElementById("review-finalize").onclick = () => submit("finalize");
   document.getElementById("review-transcribe").onclick = () => {
     if (collectReviewLines(true).length &&

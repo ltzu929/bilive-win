@@ -45,7 +45,7 @@ def check_action(job, settings=None) -> tuple[bool, str]:
         if (source.is_relative_to(settings.videos_root()) and source.is_file()
                 and source.stat().st_size < settings.video.min_source_size_mb * 1048576):
             return True, ''  # Mark skipped without pretending analysis/review succeeded.
-    if job.action in {"finalize", "render", "reburn", "remux_recording", "start_analysis", "retry_judge", "transcribe_subtitles", "cover_frames"}:
+    if job.action in {"finalize", "render", "reburn", "remux_recording", "start_analysis", "retry_judge", "transcribe_subtitles", "cover_frames", "refine_chat"}:
         if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
             return False, "FFmpeg / ffprobe unavailable"
     if job.action in {"start_analysis", "retry_judge", "generate_metadata"}:

@@ -116,7 +116,7 @@ function bindTabKeyboard(root) {
   root.querySelectorAll('[role="tablist"]').forEach((list) => {
     const tabs = [...list.querySelectorAll('[role="tab"]')];
     const panels = {
-      source: "source-media", final: "final-media",
+      source: "source-media", final: "final-media", chat: "chat-media",
       content: "content-panel", subtitles: "subtitle-panel",
     };
     tabs.forEach((tab) => {

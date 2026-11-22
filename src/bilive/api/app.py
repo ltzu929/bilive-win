@@ -305,6 +305,27 @@ class PreviewRequest(BaseModel):
     ranges: list[list[float]]
 
 
+class ChatPreviewRequest(BaseModel):
+    expected_revision: int
+    preview_id: str
+
+
+@app.post('/api/segments/{segment_id}/chat-edit')
+def apply_chat_edit(segment_id: str, request: ChatPreviewRequest):
+    return workbench.apply_chat_preview(segment_id, request.expected_revision, request.preview_id)
+
+
+@app.get('/api/media/chat-preview/{segment_id}/{preview_id}')
+def chat_preview_media(segment_id: str, preview_id: str):
+    from bilive.media.chat_preview import preview_path, require_draft
+    segment = workbench.load(segment_id)
+    require_draft(segment, preview_id)
+    path = preview_path(workbench.artifacts, segment, preview_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail='精剪预览已过期，请重新生成')
+    return FileResponse(path, media_type='video/mp4')
+
+
 @app.post('/api/segments/{segment_id}/preview')
 def record_final_preview(segment_id: str, request: PreviewRequest):
     return workbench.record_preview(segment_id, request.expected_revision, request.ranges)
@@ -507,6 +528,8 @@ def submit_action(req: ActionRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="revision required")
     if req.action == 'cover_frames':
         return accepted_with_wake(workbench.submit(req.action, req.target, req.revision, source_time=req.payload.get('source_time')))
+    if req.action == 'refine_chat':
+        return accepted_with_wake(workbench.submit(req.action, req.target, req.revision, chat_options=req.payload))
     return accepted_with_wake(workbench.submit(req.action, req.target, req.revision))
 
 

@@ -55,9 +55,11 @@ class SubtitleStore:
             return {"segment_id": segment_id, "revision": 0, "lines": [], "duration": 0.0}
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def write_ass(self, segment_id: str, out_path: Path, appearance: dict | None = None) -> Path:
-        data = self.load(segment_id)
-        if not data["lines"]:
+    def write_ass(self, segment_id: str, out_path: Path, appearance: dict | None = None,
+                  *, cuts=()) -> Path:
+        from bilive.media.cut_timeline import output_subtitles
+        cues = output_subtitles(self.load(segment_id)["lines"], cuts)
+        if not cues:
             raise ValueError("no saved subtitles to write")
         from bilive.vendor.subtitle_style import SubtitleStyle, validate_style
         validate_style(appearance or {})
@@ -98,7 +100,7 @@ class SubtitleStore:
             s = sec % 60
             return f"{h}:{m:02d}:{s:05.2f}"
 
-        for ln in data["lines"]:
+        for ln in cues:
             text = ln["text"].replace("\n", "\\N")
             position = ''
             if expanded_shadow:

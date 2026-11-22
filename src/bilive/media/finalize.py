@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from bilive.media.subtitle_store import SubtitleStore
 from bilive.media.process import run_media_command
+from bilive.media.cut_timeline import kept_ranges, output_time
 
 
 class PipelineError(Exception):
@@ -67,6 +67,7 @@ def ensure_raw_cut(
     start: float,
     end: float,
     log: list[str],
+    *, cuts=(),
 ) -> Path:
     """原始裁剪（无字幕）。成功裁剪保留供重试复用。"""
     if raw_out.is_file() and raw_out.stat().st_size > 0:
@@ -76,19 +77,42 @@ def ensure_raw_cut(
         raise PipelineError("invalid source range")
     raw_out.parent.mkdir(parents=True, exist_ok=True)
     tmp = raw_out.with_suffix(".partial.mp4")
-    _run_ffmpeg(
-        [
-            "ffmpeg", "-y",
-            # Input seeking skips the preceding recording; accurate_seek remains
-            # enabled, so transcoding still trims at the requested frame.
-            "-ss", f"{start:.3f}",
-            "-i", str(source),
-            "-t", f"{end - start:.3f}",
-            *_video_encode_options(), "-c:a", "aac",
-            str(tmp),
-        ],
-        log,
-    )
+    limit = ["-t", f"{end - start:.3f}"]
+    media_input = ["-i", str(source)]
+    window = media_input + limit
+    filters = []
+    graph_file = tmp.with_suffix('.ffgraph')
+    if cuts:
+        # Stop decoding at the selected out-point even if later frames would
+        # all be discarded by select. Plain continuous cuts keep their output limit.
+        window = limit + media_input
+        kept = kept_ranges(end - start, cuts)
+        # Keep video on the original presentation clock minus the removed time.
+        # Rounding each span to whole frames before concatenation would accumulate
+        # drift against the sample-accurate audio and subtitle clock.
+        select = '+'.join(f'gte(t,{a:.6f})*lt(t,{b:.6f})' for a, b in kept)
+        offset = '+'.join(f'{b-a:.6f}*gte(T,{b:.6f})' for a, b in cuts)
+        graph = [f"[0:v:0]select='{select}',setpts='PTS-({offset})/TB'[v]"]
+        inputs = []
+        for i, (a, b) in enumerate(kept):
+            audio = f"[0:a:0]atrim=start={a:.6f}:end={b:.6f},asetpts=PTS-STARTPTS"
+            fade = min(.008, (b-a)/2)
+            if a > 0:
+                audio += f",afade=t=in:d={fade:.6f}"
+            if b < end-start:
+                audio += f",afade=t=out:st={b-a-fade:.6f}:d={fade:.6f}"
+            graph.append(f"{audio}[a{i}]")
+            inputs.append(f"[a{i}]")
+        graph.append(f"{''.join(inputs)}concat=n={len(kept)}:v=0:a=1[a]")
+        # A long manual selection can exceed the Windows command-line limit.
+        graph_file.write_text(";".join(graph), encoding="ascii")
+        filters = ["-filter_complex_script", str(graph_file), "-map", "[v]", "-map", "[a]", "-fps_mode:v", "vfr"]
+    try:
+        _run_ffmpeg(["ffmpeg", "-y", "-ss", f"{start:.3f}", *window, *filters,
+                     *_video_encode_options(), "-c:a", "aac", str(tmp)], log)
+    finally:
+        if cuts:
+            graph_file.unlink(missing_ok=True)
     verify_media(tmp)
     tmp.replace(raw_out)
     return raw_out
@@ -140,6 +164,27 @@ class Finalizer:
             "meta": base / "finalize_meta.json",
         }
 
+    def _segment(self, segment_id):
+        path = self.artifacts_root / 'segments' / f'{segment_id}.json'
+        return json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+
+    @staticmethod
+    def _raw_for_range(raw, source, relpath, start, end, cuts, log):
+        meta = raw.with_suffix('.range.json')
+        key = {'source': relpath, 'start': start, 'end': end}
+        if cuts:
+            key['cuts'] = cuts
+        if not meta.is_file() or json.loads(meta.read_text(encoding='utf-8')) != key:
+            fresh = raw.with_name('raw_next.mp4')
+            fresh.unlink(missing_ok=True)
+            ensure_raw_cut(source, fresh, start, end, log, cuts=cuts)
+            meta.unlink(missing_ok=True)
+            fresh.replace(raw)
+            temp_meta = meta.with_suffix('.json.tmp')
+            temp_meta.write_text(json.dumps(key), encoding='utf-8')
+            temp_meta.replace(meta)
+        return ensure_raw_cut(source, raw, start, end, log, cuts=cuts)
+
     def finalize(
         self,
         segment_id: str,
@@ -171,21 +216,13 @@ class Finalizer:
             raise PipelineError("invalid source range")
         if source_end > _ffprobe_duration(source, log) + 0.01:
             raise PipelineError("range exceeds source duration")
-        # A successful raw cut only belongs to the range that created it.
-        cut_meta = paths["raw"].with_suffix(".range.json")
-        cut_key = {"source": source_relpath, "start": source_start, "end": source_end}
-        if not cut_meta.is_file() or json.loads(cut_meta.read_text(encoding="utf-8")) != cut_key:
-            # Preserve the previous raw until a new cut has completed.
-            fresh = paths["raw"].with_name("raw_next.mp4")
-            fresh.unlink(missing_ok=True)
-            ensure_raw_cut(source, fresh, source_start, source_end, log)
-            fresh.replace(paths["raw"])
-            cut_meta.write_text(json.dumps(cut_key), encoding="utf-8")
-        ensure_raw_cut(source, paths["raw"], source_start, source_end, log)
-        segment_path = self.artifacts_root / 'segments' / f'{segment_id}.json'
-        appearance = json.loads(segment_path.read_text(encoding='utf-8')).get('subtitle_style', {}) if segment_path.is_file() else {}
-        self.subtitles.write_ass(segment_id, paths["ass"], appearance)
+        segment = self._segment(segment_id)
+        cuts = segment.get('chat_cuts', [])
+        self._raw_for_range(paths['raw'], source, source_relpath, source_start, source_end, cuts, log)
+        appearance = segment.get('subtitle_style', {})
+        self.subtitles.write_ass(segment_id, paths["ass"], appearance, cuts=cuts)
         burn_subtitles(paths["raw"], paths["ass"], paths["final"], log)
+        duration = output_time(duration, cuts)
 
         meta = {
             "segment_id": segment_id,
@@ -195,6 +232,7 @@ class Finalizer:
             "revision": revision,
             "subtitle_style": appearance,
             "duration": duration,
+            "chat_cuts": cuts,
             "raw_path": str(paths["raw"]),
             "final_path": str(paths["final"]),
             "ass_path": str(paths["ass"]),
@@ -248,4 +286,5 @@ class Finalizer:
         source = (self.videos_root / source_relpath).resolve()
         paths = self.artifact_paths(segment_id)
         log: list[str] = []
-        return ensure_raw_cut(source, paths["raw"], source_start, source_end, log)
+        return self._raw_for_range(paths['raw'], source, source_relpath, source_start, source_end,
+                                   self._segment(segment_id).get('chat_cuts', []), log)

@@ -149,6 +149,8 @@ class Workbench:
                     raise ValueError("cannot change segment source")
                 before = snapshot(s)
                 self.invalidate(s)
+                s.pop('chat_draft', None)
+                s.pop('chat_cuts', None)
                 frame_ms = s.get('cover_design', {}).get('frame_ms')
                 if frame_ms is not None and not start <= frame_ms / 1000 < end:
                     for key in ('cover_path', 'selected_cover', 'cover_design'):
@@ -271,6 +273,8 @@ class Workbench:
                 s['tid'] = tid
             if s.get('preview', {}).get('revision') == expected:
                 s['preview']['revision'] = s['revision']
+            if s.get('chat_draft', {}).get('revision') == expected:
+                s['chat_draft']['revision'] = s['revision']
             if s.get('subtitles_revision') == expected:
                 lines = [SubtitleLine(v['index'], v['start'], v['end'], v['text']) for v in saved['lines']]
                 self.subtitles.save(sid, s['source_end']-s['source_start'], lines, s['revision'])
@@ -293,6 +297,9 @@ class Workbench:
                 raise ValueError("at least one subtitle line required")
             clamp_subtitle_times(lines, duration)
             self.invalidate(s)
+            if s.get('chat_cuts'):
+                s['chat_cuts'] = [[a, b] for a, b in s['chat_cuts']
+                                  if not any(line.start < b and line.end > a for line in lines)]
             s["revision"] += 1
             self.subtitles.save(sid, duration, lines, s["revision"])
             s["subtitles_revision"] = s["revision"]
@@ -317,8 +324,32 @@ class Workbench:
             self.save(s)
             return s
 
-    def submit(self, action: str, sid: str, expected: int, *, source_time: float | None = None) -> dict:
-        if action not in {"finalize", "reburn", "render", "approve_publish", "retry_judge", "transcribe_subtitles", "generate_metadata", "cover_frames"}:
+    def apply_chat_preview(self, sid, expected, identifier):
+        from bilive.media.chat_preview import preview_path, require_draft, selected_cuts
+        with self.segment_lock(sid), self.lock():
+            s = self.load(sid)
+            self.check_revision(s, expected)
+            self.editable(s)
+            draft = require_draft(s, identifier)
+            if not preview_path(self.artifacts, s, identifier).is_file():
+                raise ActionConflict('请先重新生成精剪预览')
+            cuts = selected_cuts(draft)
+            if cuts != s.get('chat_cuts', []):
+                saved = self.subtitles.load(sid)
+                if saved['revision'] != expected or s.get('subtitles_revision') != expected:
+                    raise ActionConflict('字幕版本已变化')
+                self.invalidate(s)
+                s['chat_cuts'] = cuts
+                s['revision'] += 1
+                lines = [SubtitleLine(**line) for line in saved['lines']]
+                self.subtitles.save(sid, s['source_end']-s['source_start'], lines, s['revision'])
+                s['subtitles_revision'] = draft['revision'] = s['revision']
+                self.save(s)
+            return self.detail(sid)
+
+    def submit(self, action: str, sid: str, expected: int, *, source_time: float | None = None,
+               chat_options: dict | None = None) -> dict:
+        if action not in {"finalize", "reburn", "render", "approve_publish", "retry_judge", "transcribe_subtitles", "generate_metadata", "cover_frames", "refine_chat"}:
             raise ValueError("action not available in manual workbench")
         with self.lock():
             s = self.load(sid)
@@ -348,6 +379,17 @@ class Workbench:
                     raise ActionConflict('请先保存当前片段的字幕，再生成文案建议')
             payload = {"revision": expected, "source_relpath": s["source_relpath"],
                        "source_start": s["source_start"], "source_end": s["source_end"]}
+            if action == 'refine_chat':
+                from bilive.media.chat_trim import chat_kind
+                from bilive.media.chat_preview import require_draft
+                if chat_kind(s, self.artifacts / sid) == 'other':
+                    raise ValueError('当前片段不属于聊天精剪范围')
+                if chat_options:
+                    draft = require_draft(s, chat_options.get('preview_id'))
+                    index = chat_options.get('toggle')
+                    if type(index) is not int or not 0 <= index < len(draft['cuts']):
+                        raise ValueError('请选择已有的剪点')
+                    payload.update(preview_id=draft['id'], toggle=index)
             if action == 'cover_frames':
                 if type(source_time) not in (int, float) or not s['source_start'] <= source_time < s['source_end']:
                     raise ValueError('请选择当前片段内的时间')
@@ -386,6 +428,13 @@ class Workbench:
 
     def detail(self, sid: str) -> dict:
         s = self.load(sid)
+        from bilive.media.chat_trim import chat_kind
+        from bilive.media.chat_preview import preview_path
+        s['chat_kind'] = chat_kind(s, self.artifacts / sid)
+        draft = s.get('chat_draft')
+        if draft and (draft['revision'] != s['revision'] or
+                      not preview_path(self.artifacts, s, draft['id']).is_file()):
+            s.pop('chat_draft')
         s["subtitles"] = (self.subtitles.load(sid)["lines"]
                           if s.get("subtitles_revision") == s["revision"] else [])
         s["final_valid"] = self.valid_final(s)
@@ -420,7 +469,8 @@ class Workbench:
             self.check_revision(s, expected)
             if not self.valid_final(s):
                 raise ActionConflict('没有当前版本的可预览成片')
-            duration = s['source_end'] - s['source_start']
+            from bilive.media.cut_timeline import output_time
+            duration = output_time(s['source_end'] - s['source_start'], s.get('chat_cuts', []))
             if len(ranges) > 200:
                 raise ValueError('预览区间过多')
             previous = s.get('preview', {})

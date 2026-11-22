@@ -44,7 +44,7 @@ function drawSubmission(view) {
       <div class="submission-layout">
         <form id="submission-form" class="submission-form">
           <section class="card submission-section"><div class="submission-section-title"><h2>视频文件</h2><span class="badge ${s.final_valid ? 'green' : 'orange'}">${s.final_valid ? '成片已就绪' : '成片待生成'}</span></div>
-            <div class="submission-file">${icon('video')}<div><strong>${htmlEscape(s.title || '当前切片')}</strong><p>${htmlEscape(meta.upName)} · ${timecode(s.source_end - s.source_start, true)} · ${timecode(s.source_start)}–${timecode(s.source_end)}</p><p class="hint">${htmlEscape(meta.name)}</p></div></div>
+            <div class="submission-file">${icon('video')}<div><strong>${htmlEscape(s.title || '当前切片')}</strong><p>${htmlEscape(meta.upName)} · ${timecode(chatOutputTime(s.source_end - s.source_start, s.chat_cuts), true)} · ${timecode(s.source_start)}–${timecode(s.source_end)}</p><p class="hint">${htmlEscape(meta.name)}</p></div></div>
           </section>
           <section class="card submission-section"><div class="submission-section-title"><h2>基本信息</h2><span class="muted">资料已继承当前切片</span></div>
             <fieldset id="submission-fields">
@@ -63,7 +63,7 @@ function drawSubmission(view) {
           <footer class="submission-footer"><div><strong id="submission-save-state" role="status">投稿资料已保存</strong><p class="hint" id="submission-feedback" role="status">保存草稿后可稍后继续，点击提交才会开始后台投稿。</p></div><div class="action-row"><button id="submission-save" type="button" class="btn btn-secondary">保存草稿</button><button id="submission-submit" type="submit" class="btn btn-primary">${icon('cloud-upload')}提交投稿</button></div></footer>
           <section id="submission-editorial-history" class="card submission-section">${editorialHistoryHTML(s)}</section>
         </form>
-        <aside class="submission-preview card"><h2>成片预览</h2>${s.final_valid ? `<video controls preload="metadata" src="${htmlEscape(apiURL(`/api/media/final/${encodeURIComponent(s.segment_id)}?revision=${s.revision}`))}" ${s.cover_path ? `poster="${htmlEscape(apiURL(`/api/segments/${encodeURIComponent(s.segment_id)}/cover`))}?revision=${s.revision}"` : ''}></video>` : emptyState('请返回工作台生成当前版本成片')}<div class="submission-preview-info"><strong id="submission-preview-title">${htmlEscape(s.title)}</strong><p>${htmlEscape(meta.upName)}</p><p>${timecode(s.source_end - s.source_start, true)} · 当前成片</p></div><a href="${submissionReturnLink(s)}">${icon('arrow-left')}返回检查字幕与画面</a><a href="${pageLink('publish', {segment_id: s.segment_id})}">${icon('list-details')}查看发布进度</a></aside>
+        <aside class="submission-preview card"><h2>成片预览</h2>${s.final_valid ? `<video controls preload="metadata" src="${htmlEscape(apiURL(`/api/media/final/${encodeURIComponent(s.segment_id)}?revision=${s.revision}`))}" ${s.cover_path ? `poster="${htmlEscape(apiURL(`/api/segments/${encodeURIComponent(s.segment_id)}/cover`))}?revision=${s.revision}"` : ''}></video>` : emptyState('请返回工作台生成当前版本成片')}<div class="submission-preview-info"><strong id="submission-preview-title">${htmlEscape(s.title)}</strong><p>${htmlEscape(meta.upName)}</p><p>${timecode(chatOutputTime(s.source_end - s.source_start, s.chat_cuts), true)} · 当前成片</p></div><a href="${submissionReturnLink(s)}">${icon('arrow-left')}返回检查字幕与画面</a><a href="${pageLink('publish', {segment_id: s.segment_id})}">${icon('list-details')}查看发布进度</a></aside>
       </div>
     </div>`;
   const controls = submissionFields.map(key => document.getElementById(`submission-${key}`));

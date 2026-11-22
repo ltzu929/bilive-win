@@ -8,7 +8,7 @@ function coverPrompt(segment, frame, title, manualAngle) {
     '请用我上传的这张直播原帧制作一张 16:9 的 B 站视频封面，直接给我成品图。',
     title && '投稿标题（只供理解，看视频卡片时会单独显示）：' + title,
     angle && angle !== title && '这条切片的看点：' + angle,
-    '这张图取自片内第 ' + Number(relative.toFixed(3)) + ' 秒。',
+    '这张图取自源片段第 ' + Number(relative.toFixed(3)) + ' 秒。',
   ];
   if (!manual && !suggestion.angle) {
     const context = (segment.note || segment.description || '').trim();
@@ -142,7 +142,8 @@ function bindCoverEditor(view) {
   }
   if (el('current')) el('current').onclick = () => {
     player.pause();
-    capture(Math.min(player.currentTime, s.source_end-s.source_start-.001));
+    const duration = chatOutputTime(s.source_end-s.source_start, s.chat_cuts);
+    capture(chatSourceTime(Math.min(player.currentTime, duration-.001), s.chat_cuts));
   };
   if (el('capture')) {
     const take = () => capture(el('time').valueAsNumber);
@@ -151,7 +152,7 @@ function bindCoverEditor(view) {
   }
   if (el('use-suggestion')) el('use-suggestion').onclick = () => {
     const relative = s.editorial_suggestion.frame - s.source_start;
-    if (player) { player.pause(); player.currentTime = relative; }
+    if (player) { player.pause(); player.currentTime = chatOutputTime(relative, s.chat_cuts); }
     capture(relative);
   };
   el('download').onclick = async () => {

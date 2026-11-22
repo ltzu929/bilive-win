@@ -91,6 +91,9 @@ class Worker:
         if action == 'cover_frames':
             from bilive.media.cover import capture_frames
             return capture_frames(self.workbench, job)
+        if action == 'refine_chat':
+            from bilive.media.chat_preview import build_preview
+            return build_preview(self.workbench, job)
         if action == 'generate_metadata':
             if self.analysis is None:
                 raise PipelineError('文案生成不可用')

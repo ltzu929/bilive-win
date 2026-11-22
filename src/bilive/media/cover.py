@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pydantic import BaseModel, ConfigDict, Field
 
 from bilive.domain.models import task_id_from_source_relpath
+from bilive.media.cut_timeline import output_time
 from bilive.media.process import run_media_command
 
 
@@ -42,6 +43,7 @@ def capture_frames(wb, job):
         if not start <= at < end:
             raise ValueError('取帧时间已超出片段范围')
         folder = wb.artifacts / sid
+        cuts = []
         try:
             path, origin = wb.source(s['source_relpath']), 0
         except FileNotFoundError:
@@ -52,11 +54,15 @@ def capture_frames(wb, job):
                 origin = s['candidate_start']
             elif wb.valid_final(s) and Path(s['final_path']).resolve().is_relative_to(folder):
                 path, origin = Path(s['final_path']), start
+                cuts = s.get('chat_cuts', [])
             else:
                 raise ValueError('原录播、候选及当前成片均不可用于取帧') from None
         frames = []
         for t in sorted(set(round((at + delta) * 1000) for delta in (-.5, 0, .5))):
             if not start <= t / 1000 < end:
+                continue
+            relative = t / 1000 - origin
+            if any(a <= relative < b for a, b in cuts):
                 continue
             dest = frame_file(folder, t)
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -64,7 +70,7 @@ def capture_frames(wb, job):
             if not original.is_file():
                 tmp = dest.with_suffix('.tmp.png')
                 try:
-                    run_media_command(['ffmpeg', '-loglevel', 'error', '-y', '-ss', f'{t / 1000 - origin:.6f}',
+                    run_media_command(['ffmpeg', '-loglevel', 'error', '-y', '-ss', f'{output_time(relative, cuts):.6f}',
                                        '-i', str(path), '-frames:v', '1', str(tmp)],
                                       check=True, capture_output=True, timeout=45)
                     if not tmp.is_file() or not tmp.stat().st_size:

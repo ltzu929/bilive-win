@@ -459,7 +459,7 @@ class AnalysisPipeline:
              "quality_score":quality[0] if isinstance(quality[0],(int,float)) and math.isfinite(quality[0]) else None,
              "completeness_score":quality[1] if isinstance(quality[1],(int,float)) and math.isfinite(quality[1]) else None,
              "confidence":quality[2] if isinstance(quality[2],(int,float)) and math.isfinite(quality[2]) else None,
-             "candidate_path":str(candidate)}
+             "candidate_path":str(candidate),"content_type":result.content_type,"clip_type":result.clip_type}
         plan = self._editorial_suggestion(result, event.start, start, end)
         if plan:
             s['editorial_suggestion'] = plan
