@@ -34,6 +34,26 @@ test('blocked environment and stopping service explain why work is not progressi
   assert.match(state({status:'pending',progress:{reason:'CUDA unavailable'}}, {}, [], {state:'running'}).detail, /环境检查未通过.*CUDA unavailable/);
   assert.equal(state({status:'pending'}, {}, [], {state:'stopping'}).resume, undefined);
 });
+test('nightly analysis stays active across an offline worker, without an immediate analysis or wake action', () => {
+  for (const [stage, title] of Object.entries({queued:'夜间批量分析已排队', preparing:'正在准备批量分析',
+    ready:'等待 23:30 批量提交', submitted:'等待 MiMo 批量结果', collecting:'正在导入批量结果'})) {
+    const evidence = {status:'batch_waiting', batch_stage:stage, batch_message:'本场批量进度'};
+    const current = state({status:'done'}, evidence, [], {state:'offline'});
+    assert.equal(current.title, title);
+    assert.equal(current.detail, evidence.batch_message);
+    assert.equal(current.batchActive, true);
+    assert.equal(current.resume, undefined);
+    assert.ok(context.recordingPollDelay(null, evidence) > 0);
+  }
+  const failed = {status:'batch_failed', batch_message:'上传失败'};
+  assert.equal(state(null, failed).detail, '上传失败');
+  assert.equal(state(null, failed).buttonText, '改用实时分析');
+  assert.match(state({status:'pending'}, failed, [], {state:'running'}).title, /已排队/);
+  assert.equal(context.recordingPollDelay(null, failed), 0);
+  const awaiting = state({status:'processing'}, {total:1, candidates:[{state:'batch_waiting'}]});
+  assert.match(awaiting.detail, /已处理 0 \/ 1/);
+  assert.match(awaiting.detail, /等待批量结果/);
+});
 test('running candidates report persisted processing stages', () => {
   const result = state({status:'processing'}, {total:2, candidates:[
     {state:'processing',timings:{candidate_cut:{status:'done'},judgment:{status:'processing'}}},

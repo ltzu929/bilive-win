@@ -147,6 +147,8 @@ class SourceReview:
 
     def active(self, rel: str, current=None):
         task = task_id_from_source_relpath(rel)
+        from bilive.analysis.nightly import check_batch_idle
+        check_batch_idle(self.wb, task)
         sids = {s['segment_id'] for s in self.wb.list(rel)}
         for status in (ActionJobStatus.PENDING, ActionJobStatus.PROCESSING):
             for _, job in self.wb.jobs.valid_jobs(status):

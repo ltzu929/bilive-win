@@ -19,7 +19,7 @@ def recording_evidence(wb,task,limit=20,offset=0):
     candidates=(history or {}).get('candidates',[])
     # Counts cover the whole recording, independent of evidence pagination.
     summary = {
-        'completed': sum(c.get('state') != 'processing' for c in candidates),
+        'completed': sum(c.get('state') not in ('processing', 'batch_waiting') for c in candidates),
         'dropped': sum(c.get('state') == 'drop' for c in candidates),
         'empty': sum(candidate_returned_empty(c) for c in candidates),
         'failed': sum(c.get('state') == 'failed' or any(
@@ -50,6 +50,7 @@ def recording_evidence(wb,task,limit=20,offset=0):
     return {'source_size':source.stat().st_size,'related_files_size':sum(p.stat().st_size for p in files),
             'file_count':len(files),'history_available':history is not None,
             'status':(history or {}).get('status'),'error':(history or {}).get('error'),
+            'batch_stage':(history or {}).get('batch_stage'),'batch_message':(history or {}).get('batch_message'),
             'skipped':(history or {}).get('skipped',False),'skip_reason':(history or {}).get('skip_reason'),
             'candidates':candidates[offset:offset+limit],'total':len(candidates),'summary':summary,'limit':limit,'offset':offset,
             'segments':segment_files}

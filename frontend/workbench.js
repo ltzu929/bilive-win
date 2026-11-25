@@ -467,7 +467,8 @@ function updateReviewActions() {
   }
   const dirty = review.unsaved || review.styleUnsaved || review.rangeUnsaved;
   const draftNames = [review.unsaved && "字幕", review.styleUnsaved && "样式", review.rangeUnsaved && "范围"].filter(Boolean).join("、");
-  const locked = s.publish_approval || s.active_job || s.state === "dropped" || review.savingSubtitles;
+  const batchActive = review.evidence?.status === "batch_waiting";
+  const locked = s.publish_approval || s.active_job || s.state === "dropped" || review.savingSubtitles || batchActive;
   for (const id of ['review-human-reason', 'review-human-uncertain', 'review-human-kind', 'review-feedback-save']) {
     const control = document.getElementById(id);
     if (control) control.disabled = !!(locked || review.lifecycle?.review_state === 'review_complete');
@@ -530,6 +531,7 @@ function updateReviewActions() {
       ? `已废弃：${s.drop_reason || "人工判断无需切片"}`
       : s.publish_approval
       ? "已允许发布，当前成片受保护"
+      : batchActive ? "等待本场批量分析结束后继续编辑"
       : s.active_job
         ? `后台任务${reviewJobStates[s.active_job.status] || "处理中"}，结束后可继续审核`
         : review.rangeUnsaved
@@ -554,6 +556,7 @@ function updateReviewActions() {
   setMessage("context-version", `已保存范围 ${timecode(s.source_start)} – ${timecode(s.source_end)} · 版本 ${s.revision} · ${length}`);
   setMessage("context-save", s.state === "dropped" ? "当前片段已废弃"
     : s.publish_approval ? "已批准发布，当前成片受保护"
+    : batchActive ? recordingAnalysisState().detail
     : s.active_job ? `${actionLabels[s.active_job.action] || "后台任务"}：${reviewJobStates[s.active_job.status] || s.active_job.status}。完成后可继续。`
     : review.savingSubtitles ? "正在保存字幕，请稍候…"
     : review.rangeUnsaved ? `新范围 ${document.getElementById("review-start").value} – ${document.getElementById("review-end").value} 尚未保存，请点击“保存当前范围”。`
@@ -608,7 +611,7 @@ function recordingAnalysisState(job = review.analysisJob, evidence = review.evid
   const e = evidence || {}, total = e.total || 0;
   // Recount a complete page to support older API summaries without the empty outcome.
   const summary = e.candidates?.length === total ? {
-    completed: e.candidates.filter(c => c.state !== "processing").length,
+    completed: e.candidates.filter(c => !["processing", "batch_waiting"].includes(c.state)).length,
     dropped: e.candidates.filter(c => c.state === "drop").length,
     empty: e.candidates.filter(candidateReturnedEmpty).length,
     failed: e.candidates.filter(c => c.state === "failed" || c.judgments?.some(j => j.judge_status === "judge_failed")).length,
@@ -621,6 +624,21 @@ function recordingAnalysisState(job = review.analysisJob, evidence = review.evid
     ? Math.max(0, Date.now() / 1000 - job.progress.started_at) : job?.progress?.elapsed_seconds;
   const timing = Number.isFinite(elapsed) ? ` · 已用 ${timecode(Math.floor(elapsed))}` : "";
   if (review.analysisSubmitting) return {title: "正在提交 AI 分析…", detail: "正在为本场录播创建分析任务。", tone: "busy", empty: "分析请求正在提交，请稍候。"};
+  if (e.status === "batch_waiting") {
+    const stages = {
+      queued: ["夜间批量分析已排队", "等待后台准备本场候选，准备完成后于北京时间 23:30 提交。"],
+      preparing: ["正在准备批量分析", "正在准备本场候选视频和分析请求。"],
+      ready: ["等待 23:30 批量提交", "本场候选已准备好，将在北京时间 23:30 提交给 MiMo。"],
+      submitted: ["等待 MiMo 批量结果", "云端已收到本场任务。下次启动工作台后可继续接收结果。"],
+      collecting: ["正在导入批量结果", "本场的云端结果已返回，正在生成候选与片段。"],
+    };
+    const [title, detail] = stages[e.batch_stage] || ["夜间批量分析进行中", "等待本场批量分析结果。"];
+    return {title, detail: e.batch_message || detail, tone: "busy", empty: "批量分析尚未结束。", batchActive: true};
+  }
+  if (e.status === "batch_failed" && !["pending", "processing"].includes(job?.status)) {
+    return {title: "夜间批量分析失败", detail: e.batch_message || e.error || "可查看分析证据，或选择实时分析本场。",
+      tone: "error", empty: "本场批量分析失败，可查看失败原因。", buttonText: "改用实时分析"};
+  }
   if (["pending", "processing"].includes(status)) {
     if (["paused", "offline"].includes(worker?.state)) return {
       title: worker.state === "paused" ? "AI 分析已暂停" : "AI 分析中断：后台未运行",
@@ -637,6 +655,7 @@ function recordingAnalysisState(job = review.analysisJob, evidence = review.evid
     const active = Object.entries(c.timings || {}).find(([, t]) => t.status === "processing");
     const label = active ? stages[active[0]] || active[0]
       : c.state === "failed" ? "处理失败"
+      : c.state === "batch_waiting" ? "等待批量结果"
       : c.state !== "processing" ? "已处理"
       : c.timings?.judgment?.status === "done" ? "判断已结束，等待汇总"
       : Object.values(c.timings || {}).some(t => t.status === "failed") ? "准备失败，等待汇总"
@@ -670,6 +689,7 @@ function updateRecordingAnalysis(message = "") {
   banner.setAttribute("aria-busy", String(state.tone === "busy"));
   setMessage("analysis-title", state.title);
   setMessage("analysis-detail", message || state.detail);
+  setMessage("recording-manager-state", state.title);
   const resume = document.getElementById("analysis-resume");
   if (resume) { resume.hidden = !state.resume; resume.disabled = !!(review.analysisSubmitting || review.lifecycle?.review_result); }
   setMessage("candidate-empty", state.empty);
@@ -677,12 +697,22 @@ function updateRecordingAnalysis(message = "") {
     setMessage("context-state", state.title);
     setMessage("context-save", message || state.detail);
   }
+  for (const id of ["review-cancel", "review-skip", "review-create", "review-finish"]) {
+    const control = document.getElementById(id);
+    if (control) control.disabled = !!(state.batchActive || review.lifecycle?.review_result);
+  }
   for (const id of ["review-analyze", "review-analyze-now"]) {
     const button = document.getElementById(id);
     if (!button) continue;
-    button.disabled = !!(review.analysisSubmitting || review.lifecycle?.review_result || (!state.resume && ["pending", "processing"].includes(review.analysisJob?.status)));
-    button.textContent = review.analysisSubmitting ? "正在提交…" : state.resume ? "恢复分析" : review.analysisJob?.status === "pending" ? "AI 分析已排队" : review.analysisJob?.status === "processing" ? "AI 正在分析…" : review.analysisJob?.status === "failed" ? "重试 AI 分析" : "AI 分析本场录播";
+    button.disabled = !!(review.analysisSubmitting || review.lifecycle?.review_result || state.batchActive || (!state.resume && ["pending", "processing"].includes(review.analysisJob?.status)));
+    button.textContent = state.batchActive ? state.title : state.buttonText || (review.analysisSubmitting ? "正在提交…" : state.resume ? "恢复分析" : review.analysisJob?.status === "pending" ? "AI 分析已排队" : review.analysisJob?.status === "processing" ? "AI 正在分析…" : review.analysisJob?.status === "failed" ? "重试 AI 分析" : "AI 分析本场录播");
   }
+}
+function recordingPollDelay(job, evidence) {
+  if (evidence?.status === "batch_waiting") {
+    return ["queued", "ready", "submitted"].includes(evidence.batch_stage) ? 30000 : 5000;
+  }
+  return ["pending", "processing"].includes(job?.status) ? 2000 : 0;
 }
 function analysisInputSnapshot() {
   return ["review-start", "review-end", "review-title", "review-note"].map(id => document.getElementById(id)?.value || "").join("\n");
@@ -700,7 +730,8 @@ async function watchRecordingAnalysis(taskId, epoch) {
     review.analysisWorker = data.worker;
     review.analysisSegments = data.items;
     review.evidence = evidence;
-    const ended = !["pending", "processing"].includes(data.analysis_job?.status);
+    const delay = recordingPollDelay(data.analysis_job, evidence);
+    const ended = delay === 0;
     const editing = review.unsaved || review.styleUnsaved || analysisInputSnapshot() !== review.analysisInputs || document.querySelector("dialog[open]");
     // Poll only status while working. Rebuild at completion only when no draft is being edited.
     if (ended && !editing && !review.segment?.active_job) {
@@ -708,8 +739,8 @@ async function watchRecordingAnalysis(taskId, epoch) {
       await renderManualWorkbench();
       return;
     }
-    updateRecordingAnalysis(ended ? "分析已结束。当前播放和编辑已保留；保存草稿后点击“刷新场次”查看最新片段。" : "");
-    if (!ended) analysisTimer = setTimeout(() => watchRecordingAnalysis(taskId, epoch), 2000);
+    updateRecordingAnalysis(ended && evidence.status !== "batch_failed" ? "分析已结束。当前播放和编辑已保留；保存草稿后点击“刷新场次”查看最新片段。" : "");
+    if (!ended) analysisTimer = setTimeout(() => watchRecordingAnalysis(taskId, epoch), delay);
   } catch (e) {
     if (!current()) return;
     updateRecordingAnalysis(`状态暂时无法更新：${e.message}。已提交任务仍保留，正在重新查询。`);
@@ -886,7 +917,7 @@ function reviewMarkup(s, task, lines, initial) {
       "source-dialog",
       "场次与分析管理",
       sourceTools +
-        `<div class="action-row"><button id="review-analyze" class="btn btn-secondary">AI 分析当前选中的录播</button><button id="review-cancel" class="btn btn-secondary">取消等待分析</button><button id="review-skip" class="btn btn-secondary">跳过本场分析</button></div><p class="hint">${review.autoAnalysis ? "自动 AI 切片已开启，新完成的录播会自动分析。" : "自动 AI 切片已关闭，录制结束只转为 MP4。点击分析按钮后才会将本场候选视频发送给 AI。"} 选择场次、打开页面均不会启动分析。<a href="#/settings?tab=processing">修改自动切片设置</a></p><p class="muted">${htmlEscape(review.analysisJob ? `当前场次分析：${reviewJobStates[review.analysisJob.status] || review.analysisJob.status}` : "当前场次暂无分析任务")}</p>`,
+        `<div class="action-row"><button id="review-analyze" class="btn btn-secondary">AI 分析当前选中的录播</button><button id="review-cancel" class="btn btn-secondary">取消等待分析</button><button id="review-skip" class="btn btn-secondary">跳过本场分析</button></div><p class="hint">主播档案可开启 23:30 批量分析。其他主播${review.autoAnalysis ? "在录完后自动开始实时分析。" : "在你点击分析按钮后开始实时分析。"} <a href="#/settings?tab=processing">修改自动切片设置</a></p><p class="muted" id="recording-manager-state"></p>`,
     ) +
     (s ? dialogHTML(
       "drop-dialog",
@@ -1144,9 +1175,10 @@ function drawManualWorkbench() {
   };
   for (const id of ["review-analyze", "review-analyze-now", "analysis-resume"]) {
     const analyze = document.getElementById(id);
-    analyze.disabled = !!(review.lifecycle?.review_result || (!recordingAnalysisState().resume && ["pending", "processing"].includes(review.analysisJob?.status)));
     analyze.onclick = async () => {
-      const resuming = recordingAnalysisState().resume;
+      const state = recordingAnalysisState();
+      if (state.batchActive) return;
+      const resuming = state.resume;
       review.analysisSubmitting = true;
       updateRecordingAnalysis();
       try {
@@ -1285,8 +1317,8 @@ function drawManualWorkbench() {
       }),
   );
   review.analysisInputs = analysisInputSnapshot();
-  if (["pending", "processing"].includes(review.analysisJob?.status))
-    analysisTimer = setTimeout(() => watchRecordingAnalysis(task.task_id, viewEpoch), 2000);
+  const analysisPollDelay = recordingPollDelay(review.analysisJob, review.evidence);
+  if (analysisPollDelay) analysisTimer = setTimeout(() => watchRecordingAnalysis(task.task_id, viewEpoch), analysisPollDelay);
   if (!s) return;
   const advanceCandidate = async () => {
     const refreshed = await mutateReview(`/api/recordings/${task.task_id}/segments`);
@@ -1699,16 +1731,22 @@ async function renderStreamerProfiles() {
   if (pageParams().get("room")) streamerView.room = pageParams().get("room");
   const main = document.getElementById("main");
   main.innerHTML = pageHead("主播档案", "发布默认值与最近录播") + emptyState("正在读取主播…");
-  const [rooms, recordings] = await Promise.all([
+  const [rooms, recordings, savedProfiles] = await Promise.all([
     reviewAPI("/api/rooms?page=1&size=100").catch(() => ({items: []})),
     readAllPages("/api/recordings", current).catch(() => []),
+    reviewAPI("/api/streamers").catch(() => ({items: []})),
   ]);
   if (!current()) return;
   streamerView.recordings = sortedRecordings((recordings || []).map(recordingMeta), "newest");
   const profiles = new Map(streamerView.recordings.filter(r => r.room).map(r => [r.room, r.upName]));
   rooms.items.forEach(r => profiles.set(String(roomId(r)), roomName(r)));
+  const nightlyRooms = new Set();
+  for (const profile of savedProfiles.items) {
+    profiles.set(profile.room_id, profile.display_name || profiles.get(profile.room_id) || `房间 ${profile.room_id}`);
+    if (profile.nightly_batch_enabled) nightlyRooms.add(profile.room_id);
+  }
   if (!streamerView.room) streamerView.room = profiles.keys().next().value || "";
-  main.innerHTML = pageHead("主播档案", "发布默认值与最近录播") + `<div class="profile-layout"><aside class="profile-list">${[...profiles].map(([room, name]) => `<button class="recording-option ${room === streamerView.room ? "selected" : ""}" data-profile-room="${htmlEscape(room)}"><strong>${htmlEscape(name)}</strong><small class="muted"> · ${htmlEscape(room)}</small></button>`).join("") || '<p class="muted">暂无主播，可输入房间号读取。</p>'}<label class="field">房间号<input id="profile-room" type="number" min="1" value="${htmlEscape(streamerView.room)}"></label><button id="profile-load" class="btn btn-secondary btn-sm">读取档案</button></aside><div id="profile-content"></div></div>`;
+  main.innerHTML = pageHead("主播档案", "发布默认值与最近录播") + `<div class="profile-layout"><aside class="profile-list">${[...profiles].map(([room, name]) => `<button class="recording-option ${room === streamerView.room ? "selected" : ""}" data-profile-room="${htmlEscape(room)}"><strong>${htmlEscape(name)}</strong><small class="muted"> · ${htmlEscape(room)}</small><small data-nightly-label ${nightlyRooms.has(room) ? "" : "hidden"}> · 23:30 批量分析</small></button>`).join("") || '<p class="muted">暂无主播，可输入房间号读取。</p>'}<label class="field">房间号<input id="profile-room" type="number" min="1" value="${htmlEscape(streamerView.room)}"></label><button id="profile-load" class="btn btn-secondary btn-sm">读取档案</button></aside><div id="profile-content"></div></div>`;
   main.querySelectorAll("[data-profile-room]").forEach(button => button.onclick = () => {
     location.hash = pageLink("streamer", {room: button.dataset.profileRoom});
   });
@@ -1734,6 +1772,8 @@ async function loadStreamerProfile() {
     if (pageKey() !== "streamer" || room !== streamerView.room) return;
     if (!content.isConnected) return;
     const p = data.profile;
+    const nightlyLabel = document.querySelector(`[data-profile-room="${room}"] [data-nightly-label]`);
+    if (nightlyLabel) nightlyLabel.hidden = !p.nightly_batch_enabled;
     const recent = streamerView.recordings.filter(r => r.room === room).slice(0, 5);
     content.innerHTML = `<p id="profile-message" role="status"></p><section class="recent-recordings"><h2>${htmlEscape(p.display_name || `房间 ${room}`)} · 最近录播</h2>${recent.map(r => `<a href="${pageLink("library", {source_task_id: r.task_id})}">${htmlEscape(r.date ? `${r.date} ${r.time}` : r.name)} · 打开工作台</a>`).join("") || '<p class="muted">暂无本地录播</p>'}</section><div class="split review-split"><form id="profile-form" class="card" style="padding:16px"><h2>主播信息与发布默认值</h2><p>用于新片段；单条成片修改不覆盖本档案。</p>
       ${[
@@ -1748,6 +1788,8 @@ async function loadStreamerProfile() {
             `<p><label>${label}<input style="width:100%" data-profile="${key}" value="${htmlEscape(Array.isArray(p[key]) ? p[key].join(",") : p[key])}"></label></p>`,
         )
         .join("")}
+      <p><label><input type="checkbox" id="profile-nightly-batch" aria-describedby="profile-batch-help" ${p.nightly_batch_enabled ? "checked" : ""}> 每晚 23:30 批量分析此主播录播</label></p>
+      <p id="profile-batch-help" class="hint">保存后对新录播生效。候选视频按北京时间 23:30 提交至 MiMo，按批量推理价格计费。23:30 后才完成转封装的录播留到下一晚。</p>
       <p><label for="profile-default-season">默认加入合集</label><select id="profile-default-season" style="width:100%"><option value="">不自动加入合集</option>${p.default_season ? `<option value="${htmlEscape(JSON.stringify(p.default_season))}" selected>${htmlEscape(p.default_season.title || `合集 ${p.default_season.id}`)} / ${htmlEscape(p.default_season.section_title || `小节 ${p.default_season.section_id}`)}</option>` : ''}</select></p>
       <button id="profile-season-load" type="button" class="btn btn-secondary btn-sm">读取我的合集</button><p id="profile-season-message" role="status" class="hint">用于该主播新建的手动切片和自动切片；单条切片可修改或清空。已有片段保留原选择，投稿前再次验证合集。</p>
       <div class="subtitle-preset-picker">${subtitlePresetSelectHTML('profile-subtitle-preset', p.default_subtitle_style, {inherit: true})}<p class="hint">保存档案后，该主播以后的手动切片和自动切片默认使用所选样式。已有片段保留原样式；单条切片仍可单独修改。</p><div id="profile-subtitle-preview">${subtitlePresetSampleHTML()}</div></div>
@@ -1872,7 +1914,10 @@ async function loadStreamerProfile() {
               : key === 'default_tid' ? (value ? Number(value) : null) : value;
         });
         const season = document.getElementById('profile-default-season').value;
-        payload.default_season = season ? JSON.parse(season) : null;
+        if (season !== (p.default_season ? JSON.stringify(p.default_season) : ''))
+          payload.default_season = season ? JSON.parse(season) : null;
+        const nightlyBatch = document.getElementById('profile-nightly-batch').checked;
+        if (nightlyBatch !== !!p.nightly_batch_enabled) payload.nightly_batch_enabled = nightlyBatch;
         await reviewAPI(`/api/streamers/${room}/profile`, payload);
       });
     };

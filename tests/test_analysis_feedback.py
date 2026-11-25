@@ -44,6 +44,17 @@ def test_unanalysed_recording_has_no_false_completion(env):
     assert evidence['summary']['completed'] == 0
 
 
+def test_evidence_exposes_submitted_batch_while_local_worker_is_offline(env):
+    wb, _, task = env
+    path = wb.videos / 'session.mp4.task.json'
+    path.write_text(json.dumps({'status': 'batch_waiting', 'batch_stage': 'submitted', 'candidates': [{'state': 'batch_waiting'}],
+                                'batch_message': '等待 MiMo 处理'}), encoding='utf-8')
+    evidence = recording_evidence(wb, task)
+    assert (evidence['status'], evidence['batch_stage'], evidence['batch_message']) == (
+        'batch_waiting', 'submitted', '等待 MiMo 处理')
+    assert evidence['summary']['completed'] == 0
+
+
 def test_recording_status_includes_worker_pause_without_mutating_job(env, monkeypatch):
     import importlib
     from types import SimpleNamespace

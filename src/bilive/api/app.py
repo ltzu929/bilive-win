@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 import ipaddress
+import asyncio
+import logging
+from contextlib import asynccontextmanager, suppress
 from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any, Literal
@@ -38,7 +41,30 @@ from bilive.network import use_direct_network
 load_secret_env(Path('.secrets/env'))
 use_direct_network()
 settings = load_settings()
-app = FastAPI(title="Bilive Workbench API", version="2.0.0")
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    from bilive.analysis.nightly import schedule_tick
+
+    async def dispatch():
+        while True:
+            try:
+                await asyncio.to_thread(schedule_tick, workbench, worker_control)
+            except Exception:
+                logging.getLogger(__name__).exception('Nightly batch dispatch failed')
+            await asyncio.sleep(30)
+
+    dispatcher = asyncio.create_task(dispatch())
+    try:
+        yield
+    finally:
+        dispatcher.cancel()
+        with suppress(asyncio.CancelledError):
+            await dispatcher
+
+
+app = FastAPI(title="Bilive Workbench API", version="2.0.0", lifespan=lifespan)
 
 
 @app.middleware('http')
@@ -798,6 +824,17 @@ def service_status() -> dict[str, Any]:
         "worker": {**worker_status, "busy": jobs.busy()},
         "uploader": worker_status.get("uploader", {"state":"unknown","detail":"Worker offline"}),
     }
+
+
+@app.get('/api/streamers')
+def list_streamers():
+    from bilive.vendor import streamer_profiles as profiles
+    items = []
+    for path in sorted(profiles.streamer_state_dir(workbench.videos).glob('*.json')):
+        if path.stem.isascii() and path.stem.isdigit():
+            profile = profiles.read_streamer_profile(workbench.videos, path.stem)
+            items.append({key: profile[key] for key in ('room_id', 'display_name', 'nightly_batch_enabled')})
+    return {'items': items}
 
 
 @app.get('/api/streamers/{room}/profile')

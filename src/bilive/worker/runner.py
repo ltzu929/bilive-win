@@ -66,6 +66,9 @@ class Worker:
         payload = job.payload or {}
         action = job.action
         self.touch()
+        if action == 'nightly_batch':
+            from bilive.analysis.nightly import execute_batch
+            return execute_batch(self.workbench, self.analysis, job.target)
         if action in {'trash_source', 'force_expired'}:
             if self.lifecycle is None:
                 raise PipelineError('source lifecycle unavailable')
@@ -109,11 +112,16 @@ class Worker:
             # Recording completion only prepares local playback. AI analysis
             # is opt-in; the setting is refreshed even for an existing Worker.
             analysis_job = None
-            if self.workbench is not None and self.auto_analysis_enabled() is True:
+            if self.workbench is not None:
+                from bilive.analysis.nightly import register_remux
                 from bilive.analysis.tasks import RecordingTasks
                 from bilive.domain.models import task_id_from_source_relpath
                 mp4_rel = Path(result.mp4_path).relative_to(self.workbench.videos).as_posix()
-                analysis_job = RecordingTasks(self.workbench).queue(task_id_from_source_relpath(mp4_rel), automatic=True).job_id
+                if result.verified and register_remux(self.workbench, mp4_rel):
+                    return {"ok": True, "mp4_path": result.mp4_path, "verified": True,
+                            "analysis_job_id": None, "analysis_mode": "nightly_batch"}
+                if self.auto_analysis_enabled() is True:
+                    analysis_job = RecordingTasks(self.workbench).queue(task_id_from_source_relpath(mp4_rel), automatic=True).job_id
             return {"ok":True,"mp4_path":result.mp4_path,"verified":result.verified,
                     'analysis_job_id':analysis_job}
         if self.workbench is not None and action in {"finalize", "render", "reburn", "approve_publish"}:

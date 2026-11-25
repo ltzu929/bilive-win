@@ -2,6 +2,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 import json, os, re, threading, uuid
+import time
 from pathlib import Path
 from typing import Any, Callable
 from bilive.worker.locks import ProcessLock
@@ -337,6 +338,8 @@ def default_streamer_profile(room_id: str) -> dict[str, Any]:
         "default_season": None,
         "default_slice_options": {},
         "default_subtitle_style": {},
+        "nightly_batch_enabled": False,
+        "nightly_batch_enabled_at": None,
         "approved_guidance": "",
         "updated_at": "",
     }
@@ -410,11 +413,14 @@ def patch_streamer_profile(
         "default_season",
         "default_slice_options",
         "default_subtitle_style",
+        "nightly_batch_enabled",
         "approved_guidance",
     }
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise ValueError(f"unknown profile fields: {', '.join(unknown)}")
+    if 'nightly_batch_enabled' in payload and not isinstance(payload['nightly_batch_enabled'], bool):
+        raise ValueError('夜间批量分析开关必须为布尔值')
     from bilive.media.publication import validate_template, validate_metadata
     if 'default_title_template' in payload and payload['default_title_template']:
         validate_template(payload['default_title_template'])
@@ -425,6 +431,10 @@ def patch_streamer_profile(
 
     def mutate(state: dict[str, Any]) -> dict[str, Any]:
         profile = {**default_streamer_profile(room), **(state.get("profile") or {})}
+        if 'nightly_batch_enabled' in payload and payload['nightly_batch_enabled'] != profile['nightly_batch_enabled']:
+            enabled = payload['nightly_batch_enabled']
+            profile['nightly_batch_enabled'] = enabled
+            profile['nightly_batch_enabled_at'] = time.time() if enabled else None
         if "display_name" in payload:
             profile["display_name"] = str(payload.get("display_name") or "").strip()
         for key in ("aliases", "default_tags"):

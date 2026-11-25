@@ -86,14 +86,16 @@ def encode_video_for_mimo(
     run: RunCommand = run_media_command,
     temporary_directory=tempfile.TemporaryDirectory,
     semaphore=None,
+    bitrates: tuple[tuple[str, str], ...] | None = None,
+    frame_rate: float | None = None,
 ) -> EncodedMimoVideo:
     """Return a Base64 data URL for a temporary 720p H.264/AAC copy."""
 
     with semaphore if semaphore is not None else _encode_semaphore:
-        attempts = [
+        attempts = bitrates or (
             ("900k", "96k"),
             ("450k", "64k"),
-        ]
+        )
         last_size = 0
         with temporary_directory(prefix="bilive_mimo_") as temp_dir:
             temp_root = Path(temp_dir)
@@ -104,6 +106,7 @@ def encode_video_for_mimo(
                     output,
                     video_bitrate=video_bitrate,
                     audio_bitrate=audio_bitrate,
+                    frame_rate=frame_rate,
                 )
                 run(
                     command,
@@ -136,10 +139,14 @@ def _ffmpeg_analysis_copy_command(
     *,
     video_bitrate: str,
     audio_bitrate: str,
+    frame_rate: float | None = None,
 ) -> list[str]:
     from bilive.config.settings import load_settings
     encoder = load_settings().video.encoder
     hardware = encoder == "h264_nvenc"
+    filters = "scale_cuda=-2:720:format=yuv420p:interp_algo=bicubic" if hardware else "scale=-2:720"
+    if frame_rate is not None:
+        filters = f"fps={frame_rate},{filters}"
     return [
         "ffmpeg",
         "-hide_banner",
@@ -150,7 +157,7 @@ def _ffmpeg_analysis_copy_command(
         "-i",
         str(video_path),
         "-vf",
-        "scale_cuda=-2:720:format=yuv420p:interp_algo=bicubic" if hardware else "scale=-2:720",
+        filters,
         "-c:v",
         encoder,
         "-preset",
@@ -176,6 +183,32 @@ def _double_bitrate(value: str) -> str:
     if value.endswith("k"):
         return f"{int(value[:-1]) * 2}k"
     return value
+
+
+def candidate_request_body(media_url: str, *, model: str, fps: float, media_resolution: str,
+                           artist: str, danmaku_text: str, candidate_duration: float,
+                           candidate_start: float = 0.0, candidate_core_start: float | None = None,
+                           candidate_core_end: float | None = None, candidate_transcript: str = "",
+                           guidance: str = "") -> dict:
+    prompt = _build_prompt(
+        artist=artist, danmaku_text=danmaku_text, candidate_duration=candidate_duration,
+        candidate_start=candidate_start, core_start=candidate_core_start, core_end=candidate_core_end,
+        candidate_transcript=candidate_transcript, guidance=guidance,
+    )
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "你是直播聊天切片的短视频剪辑师和严格主编。根据视频、音频、弹幕和时间关系，返回严格 JSON。"},
+            {"role": "user", "content": [
+                {"type": "video_url", "video_url": {"url": media_url}, "fps": float(fps),
+                 "media_resolution": str(media_resolution)},
+                {"type": "text", "text": prompt},
+            ]},
+        ],
+        "max_completion_tokens": 2048,
+        "response_format": {"type": "json_object"},
+        "thinking": {"type": "disabled"},
+    }
 
 
 def judge_candidate_clips_with_mimo(
@@ -208,47 +241,14 @@ def judge_candidate_clips_with_mimo(
     try:
         encoded = encoder(video_path, max_base64_bytes=max_base64_bytes)
         client = client_factory(api_key=api_key, base_url=base_url)
+        body = candidate_request_body(encoded.url, model=model, fps=fps, media_resolution=media_resolution,
+                                     artist=artist, danmaku_text=danmaku_text, candidate_duration=candidate_duration,
+                                     candidate_start=candidate_start, candidate_core_start=candidate_core_start,
+                                     candidate_core_end=candidate_core_end, candidate_transcript=candidate_transcript,
+                                     guidance=guidance)
+        extra_body = {"thinking": body.pop("thinking")}
         _set_status("requesting")
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是直播聊天切片的短视频剪辑师和严格主编。"
-                        "根据视频、音频、弹幕和时间关系，返回严格 JSON。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "video_url",
-                            "video_url": {"url": encoded.url},
-                            "fps": float(fps),
-                            "media_resolution": str(media_resolution),
-                        },
-                        {
-                            "type": "text",
-                            "text": _build_prompt(
-                                artist=artist,
-                                danmaku_text=danmaku_text,
-                                candidate_duration=candidate_duration,
-                                candidate_start=candidate_start,
-                                core_start=candidate_core_start,
-                                core_end=candidate_core_end,
-                                candidate_transcript=candidate_transcript,
-                                guidance=guidance,
-                            ),
-                        },
-                    ],
-                },
-            ],
-            max_completion_tokens=2048,
-            timeout=timeout,
-            response_format={"type": "json_object"},
-            extra_body={"thinking": {"type": "disabled"}},
-        )
+        completion = client.chat.completions.create(**body, timeout=timeout, extra_body=extra_body)
     except Exception as exc:
         reason = f"MiMo failed: {exc}"
         _set_status("error", error=reason)

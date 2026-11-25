@@ -40,6 +40,8 @@ class RecordingTasks:
         from bilive.lifecycle.review import SourceReview
         source = self.wb.source(source_relpath_from_task_id(task))
         with self.wb.lock():
+            from bilive.analysis.nightly import check_batch_idle
+            check_batch_idle(self.wb, task)
             record = SourceReview(self.wb).load(task)
             if record and record['review_state'] in {'review_complete','trash_pending'}:
                 raise ActionConflict('source review already complete')
@@ -63,6 +65,8 @@ class RecordingTasks:
     def control(self, task, action):
         source = self.wb.source(source_relpath_from_task_id(task))
         with self.wb.lock():
+            from bilive.analysis.nightly import check_batch_idle
+            check_batch_idle(self.wb, task)
             active = self.wb.jobs.find_active('start_analysis',task)
             if active and (active.action != 'start_analysis' or active.status == ActionJobStatus.PROCESSING):
                 raise ActionConflict('recording task is active')

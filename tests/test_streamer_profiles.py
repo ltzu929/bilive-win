@@ -283,6 +283,33 @@ def test_profile_api_persistence_and_cross_origin_protection(tmp_path,monkeypatc
         assert client.get('/api/streamers/123/experiences?limit=101').status_code == 422
 
 
+def test_nightly_batch_profile_opt_in_is_per_room_and_server_timed(tmp_path, monkeypatch):
+    import importlib
+    api = importlib.import_module('bilive.api.app')
+    videos = tmp_path / 'Videos'
+    monkeypatch.setattr(api.workbench, 'videos', videos)
+    # Old profiles lack both fields and can be listed after all local media has expired.
+    path = profiles.streamer_state_path(videos, '123')
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'profile': {'room_id': '123', 'display_name': '测试'}}), encoding='utf-8')
+    with TestClient(api.app) as client:
+        url = '/api/streamers/123/profile'
+        assert client.get('/api/streamers').json()['items'] == [
+            {'room_id': '123', 'display_name': '测试', 'nightly_batch_enabled': False}]
+        assert client.get(url).json()['profile']['nightly_batch_enabled_at'] is None
+        assert client.post(url, json={'nightly_batch_enabled': 'false'}).status_code == 422
+        assert client.post(url, json={'nightly_batch_enabled_at': 0}).status_code == 422
+        first = client.post(url, json={'nightly_batch_enabled': True}).json()['profile']
+        assert first['nightly_batch_enabled'] is True and first['nightly_batch_enabled_at'] > 0
+        assert client.get('/api/streamers').json()['items'][0]['nightly_batch_enabled'] is True
+        assert client.get('/api/streamers/456/profile').json()['profile']['nightly_batch_enabled'] is False
+        for patch in ({'display_name': '测试二'}, {'nightly_batch_enabled': True}):
+            assert client.post(url, json=patch).json()['profile']['nightly_batch_enabled_at'] == first['nightly_batch_enabled_at']
+        assert client.post(url, json={'nightly_batch_enabled': False}).json()['profile']['nightly_batch_enabled_at'] is None
+        later = client.post(url, json={'nightly_batch_enabled': True}).json()['profile']
+        assert later['nightly_batch_enabled_at'] > first['nightly_batch_enabled_at']
+
+
 def test_subtitle_hotwords_roundtrip_room_isolation_and_clear(tmp_path, monkeypatch):
     import importlib
     from bilive.lifecycle.profiles import subtitle_hotwords_for_profile

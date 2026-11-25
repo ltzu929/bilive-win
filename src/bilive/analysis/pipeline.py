@@ -15,6 +15,7 @@ from bilive.domain.models import SubtitleLine, clamp_subtitle_times, segment_id_
 from bilive.media.finalize import PipelineError, ensure_raw_cut
 from bilive.media.remux import _ffprobe_duration
 from bilive.vendor.autoslice.burst_detector import detect_bursts
+from bilive.worker.locks import LockUnavailable
 from bilive.worker.timing import timed_stage
 
 
@@ -210,8 +211,7 @@ class AnalysisPipeline:
         return {'ok': True, 'revision': job.payload['revision'], 'lines': [asdict(line) for line in lines],
                 'correction': correction}
 
-    @_release_asr_after_task
-    def run(self, source_relpath: str, task_id: str) -> dict:
+    def _recall(self, source_relpath, task_id):
         source = self.workbench.source(source_relpath)
         duration = _ffprobe_duration(source, [])
         danmaku = read_danmaku(source.with_suffix(".xml"))
@@ -223,14 +223,18 @@ class AnalysisPipeline:
             burst_window=options.get('burst_window', b.window), context=options.get('burst_context', b.context),
             merge_gap=options.get('burst_merge_gap', b.merge_gap), top_n=options.get('burst_top_n', b.top_n), lag_seconds=b.lag)
         history = {"source_relpath":source_relpath, "candidates":[], "segments":[], "status":"processing"}
-        path = source.with_suffix(source.suffix + ".task.json")
-        self._save_history(path, history)
         bindings = []
         for event in bursts:
             candidate = self.workbench.artifacts / "candidates" / task_id / f"candidate-{round(event.start*1000)}-{round(event.end*1000)}.mp4"
             entry = {**asdict(event), "path":str(candidate), "state":"processing", "segments":[]}
             history["candidates"].append(entry)
             bindings.append((event, candidate, entry))
+        return source, duration, danmaku, profile, history, bindings
+
+    @_release_asr_after_task
+    def run(self, source_relpath: str, task_id: str) -> dict:
+        source, duration, danmaku, profile, history, bindings = self._recall(source_relpath, task_id)
+        path = source.with_suffix(".mp4.task.json")
         self._save_history(path, history)
         progress_lock = threading.Lock()
         def save_progress():
@@ -240,15 +244,33 @@ class AnalysisPipeline:
             futures = [pool.submit(self._prepare, source, source_relpath, event, candidate, entry, danmaku, profile, save_progress)
                        for event, candidate, entry in bindings]
             prepared = [future.result() for future in futures]
+        return self._apply_results(source_relpath, source, duration, history, bindings, prepared)
+
+    @_release_asr_after_task
+    def prepare_batch(self, source_relpath: str, task_id: str, folder: Path) -> list[Path]:
+        from bilive.analysis.batch_pipeline import prepare
+        return prepare(self, source_relpath, task_id, folder)
+
+    @_release_asr_after_task
+    def apply_batch(self, source_relpath: str, task_id: str, folder: Path, results: dict) -> dict:
+        from bilive.analysis.batch_pipeline import apply
+        return apply(self, source_relpath, task_id, folder, results)
+
+    def _apply_results(self, source_relpath, source, duration, history, bindings, prepared):
         from bilive.vendor.clip_rules import _mark_cross_candidate_duplicates
+        path = source.with_suffix('.mp4.task.json')
         items = [(i, SimpleNamespace(context_start=event.start, context_end=event.end), result)
                  for i, ((event, _, _), result) in enumerate(zip(bindings, prepared))]
         _mark_cross_candidate_duplicates(items, source_relpath, self._quality_review)
         ordered = sorted(zip(bindings, prepared), key=lambda pair:
             not any(r.judge_status == 'keep' and r.retain_recommendation for r in pair[1].get('results') or []))
         for (event, candidate, entry), prepared_result in ordered:
+            if entry.get('batch_applied'):
+                continue
             results = prepared_result.get('results', [])
             entry['judgments'] = [asdict(r) for r in results or []]
+            if 'usage' in prepared_result:
+                entry['token_usage'] = prepared_result['usage']
             if prepared_result.get('error'):
                 entry.update(state='failed', reason=prepared_result['error'])
             else:
@@ -271,16 +293,32 @@ class AnalysisPipeline:
                         candidate.unlink(missing_ok=True)
                     elif results and entry['state'] != 'review':
                         entry['state'] = 'reviewed'
+                except LockUnavailable:
+                    if 'batch_run' in history:
+                        raise
+                    entry.update(state='failed', reason='LockUnavailable')
                 except Exception as exc:
                     entry.update(state='failed', reason=type(exc).__name__)
+            if 'batch_run' in history:
+                entry['batch_applied'] = True
             self._save_history(path, history)
         history['status'] = 'done'
-        history['requires_source_review'] = not bursts or any(c['state'] in {'failed','review'} for c in history['candidates'])
+        if 'batch_run' in history:
+            history['batch_stage'] = 'completed'
+            history['batch_message'] = '批量结果已回填'
+        history['requires_source_review'] = not bindings or any(c['state'] in {'failed','review'} for c in history['candidates'])
         self._save_history(path, history)
-        return {'ok':True,'candidates':len(bursts),'segments':history['segments'],
-                'requires_source_review':history['requires_source_review']}
+        return self._analysis_summary(history)
 
-    def _prepare(self, source, rel, event, candidate, entry, danmaku, profile, on_progress=None):
+    @staticmethod
+    def _analysis_summary(history):
+        summary = {'ok': True, 'candidates': len(history['candidates']), 'segments': history['segments'],
+                   'requires_source_review': history['requires_source_review']}
+        if 'batch_run' in history:
+            summary['failed_candidates'] = sum(c['state'] == 'failed' for c in history['candidates'])
+        return summary
+
+    def _prepare(self, source, rel, event, candidate, entry, danmaku, profile, on_progress=None, *, build_line=None):
         import time
         started = time.perf_counter()
         try:
@@ -302,8 +340,9 @@ class AnalysisPipeline:
                     transcript = None
                     entry['pre_asr_failed'] = True
                     entry['timings']['auxiliary_asr']['status'] = 'failed'
-            with timed_stage(entry,'judgment',on_progress):
-                results = self.judge(video_path=str(candidate),artist=profile.get('display_name') or Path(rel).parent.name,
+            with timed_stage(entry,'batch_encode' if build_line else 'judgment',on_progress):
+                judge = build_line or self.judge
+                results = judge(video_path=str(candidate),artist=profile.get('display_name') or Path(rel).parent.name,
                 guidance=str(profile.get('approved_guidance',''))[:2000],
                 danmaku_text='\n'.join(f'{t-event.start:.2f}s {text}' for t,text in danmaku if event.start <= t <= event.end),
                 candidate_duration=event.end-event.start,candidate_start=event.start,
@@ -311,6 +350,9 @@ class AnalysisPipeline:
                 candidate_transcript=self._judge_transcript(transcript))
             return {'results':results,'transcript':transcript}
         except Exception as exc:
+            if build_line:
+                from bilive.config.secrets import redact
+                return {'error': redact(str(exc))[:500] or type(exc).__name__}
             return {'error':type(exc).__name__}
         finally:
             entry['prepare_ms'] = round((time.perf_counter()-started)*1000)
@@ -441,13 +483,26 @@ class AnalysisPipeline:
 
     def _persist_result(self, sid, start, end, result, rel, source, event,
                         candidate, entry, history, pre_asr, duration):
-        entry["segments"].append(sid)
-        duplicate = any(abs(s["source_start"]-start) < 0.5 and abs(s["source_end"]-end) < 0.5
+        if sid not in entry['segments']:
+            entry["segments"].append(sid)
+        batch_origin = f"{history['batch_run']}/{entry['custom_id']}" if 'batch_run' in history else None
+        previous = None
+        duplicate = any(s['segment_id'] != sid and abs(s["source_start"]-start) < 0.5 and abs(s["source_end"]-end) < 0.5
                         for s in self.workbench.list(rel))
         if (self.workbench.root / f"{sid}.json").exists():
-            # Do not overwrite prior manual editing when a candidate overlaps.
-            entry.update(state='review', reason='existing segment preserved; duplicate requires review')
-            return
+            previous = self.workbench.load(sid)
+            if not batch_origin or previous.get('batch_origin') != batch_origin:
+                entry.update(state='review', reason='existing segment preserved; duplicate requires review')
+                return
+            # A shutdown can happen after the segment save and before the candidate checkpoint.
+            if sid not in history['segments']:
+                history['segments'].append(sid)
+            manually_edited = (previous['revision'] != 1 or previous.get('human_reviewed')
+                               or previous.get('editorial_history') or previous.get('publish_approval'))
+            if not previous.get('batch_incomplete') or manually_edited:
+                if previous['state'] == 'needs_review':
+                    entry['state'] = 'review'
+                return
         quality = (result.quality_score, result.completeness_score, result.confidence)
         keep = result.judge_status == "keep" and result.retain_recommendation
         passes = all(isinstance(v, (int,float)) and math.isfinite(v) for v in quality) and self.settings.quality.all_pass(*quality)
@@ -473,8 +528,13 @@ class AnalysisPipeline:
         default_style = (self.workbench.current_default_style() if self.workbench.default_style_provider
                          else self.settings.subtitle_style())
         s['subtitle_style'] = {**default_style,**profile.get('default_subtitle_style', {})}
+        if previous is not None:
+            s = previous
+        if batch_origin:
+            s.update(batch_origin=batch_origin, batch_incomplete=True)
         self.workbench.save(s)
-        history["segments"].append(sid)
+        if sid not in history['segments']:
+            history["segments"].append(sid)
         sidecar = self.finalizer.artifact_paths(sid)["meta"].with_name("analysis_sidecar.json")
         sidecar.parent.mkdir(parents=True,exist_ok=True)
         result.candidate_start,result.candidate_end = event.start,event.end
@@ -484,24 +544,34 @@ class AnalysisPipeline:
         if not keep or not passes or duplicate:
             if decision != "drop":
                 entry["state"] = "review"
+            if batch_origin:
+                s.pop('batch_incomplete')
+                self.workbench.save(s)
             return
         try:
             # Formal transcription uses the actual selected source range;
             # candidate timestamps are never treated as segment timestamps.
-            s['processing_stage'] = 'formal_asr'
-            with timed_stage(s,'formal_asr'):
-                start, end, lines, alignment = self._formal_subtitles(source, sid, start, end, duration, event, pre_asr,
-                                                                    profile=profile)
-            if self.settings.subtitle.light_correct:
-                try:
-                    with timed_stage(s,'correction'):
-                        lines = self._correct_subtitle_lines(lines,
-                            artist=profile.get('display_name') or Path(rel).parent.name, title=result.title, profile=profile,
-                            audio_source=source, start_seconds=start, duration_seconds=end-start)
-                    alignment['correction'] = 'completed'
-                except Exception:
-                    alignment['correction'] = 'failed_original_retained'
-                    s['timings']['correction']['status'] = 'failed'
+            if previous is not None and s.get('subtitles_revision') == 1:
+                saved = self.workbench.subtitles.load(sid)
+                if saved['revision'] != 1 or not saved['lines']:
+                    raise PipelineError('批量成片上次保存的字幕版本不匹配')
+                start, end, alignment = s['source_start'], s['source_end'], s['alignment']
+                lines = [SubtitleLine(**line) for line in saved['lines']]
+            else:
+                s['processing_stage'] = 'formal_asr'
+                with timed_stage(s,'formal_asr'):
+                    start, end, lines, alignment = self._formal_subtitles(source, sid, start, end, duration, event, pre_asr,
+                                                                        profile=profile)
+                if self.settings.subtitle.light_correct:
+                    try:
+                        with timed_stage(s,'correction'):
+                            lines = self._correct_subtitle_lines(lines,
+                                artist=profile.get('display_name') or Path(rel).parent.name, title=result.title, profile=profile,
+                                audio_source=source, start_seconds=start, duration_seconds=end-start)
+                        alignment['correction'] = 'completed'
+                    except Exception:
+                        alignment['correction'] = 'failed_original_retained'
+                        s['timings']['correction']['status'] = 'failed'
             s.update(source_start=start,source_end=end,alignment=alignment)
             if plan and not self._editorial_suggestion(result, event.start, start, end):
                 s.pop('editorial_suggestion', None)
@@ -524,6 +594,7 @@ class AnalysisPipeline:
                 s.update(decision='review',state='needs_review',processing_stage='duplicate_review',
                          duplicate_of=aligned_duplicate['segment_id'],duplicate_reason='duplicate after ASR alignment')
                 entry['state'] = 'review'
+                s.pop('batch_incomplete', None)
                 self.workbench.save(s)
                 self._save_history(sidecar,{**asdict(result),'alignment':alignment,
                     'duplicate_of':s['duplicate_of'],'duplicate_reason':s['duplicate_reason']})
@@ -543,12 +614,13 @@ class AnalysisPipeline:
             from bilive.config.secrets import redact
             s.update(state="needs_review", processing_error=type(exc).__name__, processing_error_detail=redact(str(exc)))
             entry["state"] = "review"
-        self.workbench.save(s)
         self._save_history(sidecar,{**asdict(result),'alignment':s.get('alignment'),
             'processing_stage':s.get('processing_stage'),'processing_error':s.get('processing_error'),
             'processing_error_detail':s.get('processing_error_detail'),
             'timings':s.get('timings',{}),
             'duplicate_of':s.get('duplicate_of'),'duplicate_reason':s.get('duplicate_reason')})
+        s.pop('batch_incomplete', None)
+        self.workbench.save(s)
 
     def _formal_subtitles(self, source, sid, start, end, duration, event, pre_asr, *, profile=None):
         from bilive.vendor.clip_rules import snap_trim_to_segments, _slice_segments_to_trim

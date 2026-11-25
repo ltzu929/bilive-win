@@ -100,7 +100,7 @@ class Workbench:
     def check_source_idle(self, rel: str, *, allow_analysis: bool = False):
         from bilive.domain.models import task_id_from_source_relpath
         task = task_id_from_source_relpath(rel)
-        if any(j.target == task and not (allow_analysis and j.action == 'start_analysis')
+        if any(j.target == task and not (allow_analysis and j.action in {'start_analysis', 'nightly_batch'})
                for state in (ActionJobStatus.PENDING,ActionJobStatus.PROCESSING)
                for _,j in self.jobs.valid_jobs(state)):
             raise ActionConflict('source has an active analysis or recycle action')
